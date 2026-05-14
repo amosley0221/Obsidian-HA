@@ -209,7 +209,56 @@ function QueueSheet({ open, onClose, theme = 'dark' }) {
           </button>
         </div>
         <div style={{ overflowY: 'auto', flex: 1, padding: '8px 8px 16px' }}>
-          {q.map((tid, i) => {
+          {(() => {
+            // Real queue isn't exposed via the standard HA media_player API,
+            // so we show the currently-playing track of the active room and
+            // a helpful note. Fetching the full upcoming queue from Music
+            // Assistant would require additional WS commands we haven't
+            // wired up yet.
+            const active = s.rooms[s.activeRoomId];
+            const t = active?.trackId ? Tracks.find((x) => x.id === active.trackId) : null;
+            if (!t) {
+              return (
+                <div style={{ padding: 32, textAlign: 'center', color: c.sub, fontSize: 13 }}>
+                  Nothing playing. Pick something from the Library.
+                </div>
+              );
+            }
+            return (
+              <>
+                <div style={{
+                  display: 'grid', gridTemplateColumns: '44px 1fr auto', gap: 12,
+                  alignItems: 'center', padding: '8px 12px',
+                  borderRadius: 12,
+                  background: dark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.04)',
+                }}>
+                  <AlbumArt art={t.art} title={t.album} size={44} radius={8} />
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontWeight: 540, fontSize: 14, letterSpacing: '-0.01em',
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                  display: 'flex', alignItems: 'center' }}>
+                      {t.title}
+                      <AnimatedWaveform playing={!!active.playing} color={c.text} height={10} width={14} style={{ marginLeft: 8 }} />
+                    </div>
+                    <div style={{ color: c.sub, fontSize: 12, marginTop: 2,
+                                  overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {t.artist}{t.album ? ` · ${t.album}` : ''}
+                    </div>
+                  </div>
+                  <div style={{ color: c.sub, fontSize: 12, fontVariantNumeric: 'tabular-nums' }}>
+                    {t.duration ? formatTime(t.duration) : ''}
+                  </div>
+                </div>
+                <div style={{ padding: '14px 12px 4px', fontSize: 11, color: c.sub, lineHeight: 1.5 }}>
+                  Full upcoming-queue support isn't wired up yet — the queue
+                  managed by Music Assistant on the speaker doesn't surface
+                  over the standard HA API. Track changes here when the
+                  next song starts.
+                </div>
+              </>
+            );
+          })()}
+          {false && q.map((tid, i) => {
             const t = Tracks.find((x) => x.id === tid);
             if (!t) return null;
             const isCurrent = i === s.queueIndex;

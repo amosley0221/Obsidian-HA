@@ -334,7 +334,7 @@ function OMRooms({ tk }) {
   const groups = useMemo(() => {
     const out = []; const byGroup = new Map();
     for (const r of DATA.rooms) {
-      const gid = s.rooms[r.id].groupId;
+      const gid = s.rooms[r.id]?.groupId;
       if (gid) {
         if (!byGroup.has(gid)) { const arr = []; byGroup.set(gid, arr); out.push({ groupId: gid, rooms: arr }); }
         byGroup.get(gid).push(r);
@@ -342,6 +342,14 @@ function OMRooms({ tk }) {
         out.push({ groupId: null, rooms: [r] });
       }
     }
+    // Playing rooms / groups containing them float to the top.
+    out.sort((a, b) => {
+      const aPlay = a.rooms.some((r) => s.rooms[r.id]?.playing);
+      const bPlay = b.rooms.some((r) => s.rooms[r.id]?.playing);
+      if (aPlay && !bPlay) return -1;
+      if (bPlay && !aPlay) return 1;
+      return 0;
+    });
     return out;
   }, [s.rooms]);
 
@@ -405,9 +413,12 @@ function OMRooms({ tk }) {
       <div style={{ marginTop: 18, display: 'flex', flexDirection: 'column', gap: 10 }}>
         {groups.map((g, gi) => (
           <div key={gi} style={{
-            padding: g.groupId ? 6 : 0,
-            background: g.groupId ? tk.surface : 'transparent',
-            border: g.groupId ? `0.5px solid ${tk.border}` : 'none',
+            padding: g.groupId ? '6px 6px 6px 10px' : 0,
+            background: g.groupId
+              ? 'color-mix(in oklab, var(--om-accent) 7%, transparent)'
+              : 'transparent',
+            border: g.groupId ? '0.5px solid color-mix(in oklab, var(--om-accent) 30%, transparent)' : 'none',
+            borderLeft: g.groupId ? '3px solid var(--om-accent)' : 'none',
             borderRadius: g.groupId ? 18 : 0,
             display: 'flex', flexDirection: 'column', gap: 6,
           }}>

@@ -207,14 +207,7 @@ function ObsidianTopbar({ onQueue, onLibrary, tk, theme, onThemeToggle }) {
 
       <TopbarSearch tk={tk} />
 
-      <button style={topBtn(tk)}>
-        <Icons.AirPlay size={16} />
-        <span style={{ whiteSpace: 'nowrap' }}>{room?.name}</span>
-        {groupSize > 1 && <span style={{
-          fontSize: 11, padding: '2px 6px', borderRadius: 999,
-          background: 'var(--obs-accent)', color: tk.isDark ? '#0a0a0a' : '#fff', fontWeight: 600,
-        }}>+{groupSize - 1}</span>}
-      </button>
+      <TopbarRoomButton tk={tk} />
       {onLibrary && (
         <button style={topBtn(tk)} onClick={onLibrary}>
           <span style={{ whiteSpace: 'nowrap' }}>Library</span>
@@ -228,10 +221,198 @@ function ObsidianTopbar({ onQueue, onLibrary, tk, theme, onThemeToggle }) {
           {theme === 'dark' ? '☾' : '☀'}
         </button>
       )}
-      <button style={{ ...topBtn(tk), width: 34, padding: 0, justifyContent: 'center' }}><Icons.More size={16} /></button>
+      <TopbarMoreButton tk={tk} />
     </div>
   );
 }
+
+// ─── Topbar Room Button — opens a dropdown room/group manager ──────────
+function TopbarRoomButton({ tk }) {
+  const s = useSonos();
+  const groupSize = sel.groupedWith(s, s.activeRoomId).length;
+  const activeRoom = DATA.rooms.find((r) => r.id === s.activeRoomId);
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const activeGroupId = s.rooms[s.activeRoomId]?.groupId;
+  const groupMates = activeGroupId
+    ? DATA.rooms.filter((r) => s.rooms[r.id]?.groupId === activeGroupId)
+    : [];
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <button style={topBtn(tk)} onClick={() => setOpen((o) => !o)}>
+        <Icons.AirPlay size={16} />
+        <span style={{ whiteSpace: 'nowrap' }}>{activeRoom?.name}</span>
+        {groupSize > 1 && <span style={{
+          fontSize: 11, padding: '2px 6px', borderRadius: 999,
+          background: 'var(--obs-accent)', color: tk.isDark ? '#0a0a0a' : '#fff', fontWeight: 600,
+        }}>+{groupSize - 1}</span>}
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 8px)', right: 0,
+          width: 'min(320px, calc(100vw - 32px))',
+          maxHeight: 'calc(100vh - 96px)',
+          background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
+          backdropFilter: 'blur(30px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+          border: `0.5px solid ${tk.border}`,
+          borderRadius: 16, color: tk.text,
+          boxShadow: '0 24px 60px rgba(0,0,0,.4)',
+          overflow: 'hidden', display: 'flex', flexDirection: 'column',
+          zIndex: 50,
+        }}>
+          {groupSize > 1 && (
+            <div style={{
+              padding: '12px 14px 8px', borderBottom: `0.5px solid ${tk.border}`,
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+            }}>
+              <span style={{
+                fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em',
+                textTransform: 'uppercase', color: 'var(--obs-accent)',
+              }}>Group · {groupMates.length}</span>
+              <button
+                onClick={() => groupMates.slice(1).forEach((r) => SonosActions.ungroup(r.id))}
+                style={{
+                  border: 0, background: 'transparent', color: tk.text2,
+                  fontSize: 11, fontWeight: 540, cursor: 'pointer',
+                }}>
+                Ungroup all
+              </button>
+            </div>
+          )}
+          <div style={{ overflowY: 'auto', padding: '6px 6px 10px', flex: 1 }}>
+            {DATA.rooms.map((r) => {
+              const st = s.rooms[r.id] || {};
+              const isActive = r.id === s.activeRoomId;
+              const inActiveGroup = activeGroupId && st.groupId === activeGroupId;
+              return (
+                <div key={r.id} style={{
+                  display: 'flex', alignItems: 'center', gap: 8,
+                  padding: '6px 10px', borderRadius: 10,
+                  background: isActive ? tk.surfaceStrong : 'transparent',
+                }}>
+                  <button onClick={() => { SonosActions.setActiveRoom(r.id); setOpen(false); }}
+                    style={{
+                      display: 'flex', alignItems: 'center', gap: 8,
+                      flex: 1, minWidth: 0, padding: 0, border: 0,
+                      background: 'transparent', color: tk.text, cursor: 'pointer',
+                      textAlign: 'left',
+                    }}>
+                    <RoomIcon id={r.icon} size={14} stroke={1.5} />
+                    <span style={{ fontSize: 13, fontWeight: 540,
+                                   overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                                   flex: 1, minWidth: 0 }}>
+                      {r.name}
+                    </span>
+                    {st.playing && (
+                      <AnimatedWaveform playing color="var(--obs-accent)" height={10} width={12} bars={3} />
+                    )}
+                    {inActiveGroup && !isActive && (
+                      <span style={{
+                        fontSize: 9, fontWeight: 600, letterSpacing: '0.08em',
+                        textTransform: 'uppercase', color: tk.text3,
+                      }}>In group</span>
+                    )}
+                  </button>
+                  {inActiveGroup && (
+                    <button onClick={() => SonosActions.ungroup(r.id)}
+                      title="Leave group"
+                      style={{
+                        width: 22, height: 22, borderRadius: 999,
+                        border: `0.5px solid ${tk.border}`, background: 'transparent',
+                        color: tk.text2, cursor: 'pointer',
+                        display: 'grid', placeItems: 'center', flexShrink: 0,
+                      }}>
+                      <Icons.Close size={10} />
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Topbar ⋮ More — utility menu ────────────────────────────────────
+function TopbarMoreButton({ tk }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => { if (!ref.current?.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [open]);
+
+  const reloadLibrary = () => {
+    if (window.MA?.browseEntity && window.haDebug?.client) {
+      // Re-run library refresh via the bridge's exposed handle.
+      window.location.reload();
+    } else {
+      window.location.reload();
+    }
+    setOpen(false);
+  };
+  const resetAuth = () => {
+    if (window.confirm('Sign out and re-enter the HA token?')) {
+      try {
+        localStorage.removeItem('sonos-ha-url');
+        localStorage.removeItem('sonos-ha-token');
+      } catch (e) {}
+      window.location.hash = '#reset';
+      window.location.reload();
+    }
+    setOpen(false);
+  };
+
+  return (
+    <div ref={ref} style={{ position: 'relative', flexShrink: 0 }}>
+      <button onClick={() => setOpen((o) => !o)}
+        style={{ ...topBtn(tk), width: 34, padding: 0, justifyContent: 'center' }}
+        aria-label="More options">
+        <Icons.More size={16} />
+      </button>
+      {open && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 8px)', right: 0,
+          width: 220,
+          background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
+          backdropFilter: 'blur(30px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+          border: `0.5px solid ${tk.border}`,
+          borderRadius: 14, color: tk.text,
+          boxShadow: '0 24px 60px rgba(0,0,0,.4)',
+          overflow: 'hidden', padding: 6,
+          zIndex: 50,
+        }}>
+          <button onClick={reloadLibrary} style={moreItem(tk)}>Reload</button>
+          <button onClick={resetAuth} style={moreItem(tk)}>Sign out / reset</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const moreItem = (tk) => ({
+  display: 'flex', alignItems: 'center', gap: 8,
+  width: '100%', padding: '8px 10px', border: 0,
+  background: 'transparent', color: tk.text, cursor: 'pointer',
+  borderRadius: 8, textAlign: 'left',
+  fontSize: 13, fontWeight: 540,
+});
 
 const topBtn = (tk) => ({
   display: 'flex', alignItems: 'center', gap: 6,
@@ -252,7 +433,7 @@ function ObsidianRooms({ tk }) {
   const groups = useMemo(() => {
     const out = []; const byGroup = new Map();
     for (const r of DATA.rooms) {
-      const gid = s.rooms[r.id].groupId;
+      const gid = s.rooms[r.id]?.groupId;
       if (gid) {
         if (!byGroup.has(gid)) { const arr = []; byGroup.set(gid, arr); out.push({ groupId: gid, rooms: arr }); }
         byGroup.get(gid).push(r);
@@ -260,6 +441,15 @@ function ObsidianRooms({ tk }) {
         out.push({ groupId: null, rooms: [r] });
       }
     }
+    // Sort: any group/standalone with a playing room comes first; everything
+    // else keeps alphabetical-from-discovery order.
+    out.sort((a, b) => {
+      const aPlay = a.rooms.some((r) => s.rooms[r.id]?.playing);
+      const bPlay = b.rooms.some((r) => s.rooms[r.id]?.playing);
+      if (aPlay && !bPlay) return -1;
+      if (bPlay && !aPlay) return 1;
+      return 0;
+    });
     return out;
   }, [s.rooms]);
 
@@ -271,9 +461,12 @@ function ObsidianRooms({ tk }) {
         {groups.map((g, gi) => (
           <div key={gi} style={{
             position: 'relative',
-            padding: g.groupId ? '4px 4px 6px' : 0,
-            background: g.groupId ? tk.surface : 'transparent',
-            border: g.groupId ? `0.5px solid ${tk.border}` : '0',
+            padding: g.groupId ? '4px 4px 4px 8px' : 0,
+            background: g.groupId
+              ? 'color-mix(in oklab, var(--obs-accent) 7%, transparent)'
+              : 'transparent',
+            border: g.groupId ? '0.5px solid color-mix(in oklab, var(--obs-accent) 30%, transparent)' : '0',
+            borderLeft: g.groupId ? '3px solid var(--obs-accent)' : '0',
             borderRadius: g.groupId ? 'var(--obs-radius)' : 0,
           }}>
             {g.groupId && (
