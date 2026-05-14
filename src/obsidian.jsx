@@ -444,60 +444,156 @@ const LIB_SECTIONS = [
   { id: 'radio',      label: 'Radio' },
 ];
 
+// Classifies an item: 'track' plays immediately; everything else drills in.
+function itemBehavior(it) {
+  const type = (it._mass?.media_content_type || '').toLowerCase();
+  if (type === 'track' || type === 'music') return 'play';
+  if (type === 'artist' || type === 'album' || type === 'playlist') return 'drill';
+  if (type === 'radio') return 'play';
+  // Anything else with can_expand drills in; otherwise play
+  if (it.canExpand || it._mass?.can_expand) return 'drill';
+  return 'play';
+}
+
 function ObsidianLibrary({ section, setSection, tk }) {
   const s = useSonos();
-  const items = useMemo(() => {
-    const map = (arr) => (arr || []).map((it) => ({
-      id: it.id, title: it.title, subtitle: it.artist || it.subtitle || '', art: it.art,
-    }));
+  const [drillStack, setDrillStack] = useState([]); // [{ item, children, loading }]
+  const [drillLoading, setDrillLoading] = useState(false);
+
+  const baseItems = useMemo(() => {
     switch (section) {
-      case 'listen-now': return map((DATA.recents || []).slice(0, 8));
-      case 'tracks':     return map(DATA.libraryTracks || []);
-      case 'playlists':  return map(DATA.playlists || []);
-      case 'albums':     return map(DATA.albums || []);
-      case 'artists':    return map(DATA.artists || []);
-      case 'radio':      return map(DATA.stations || []);
+      case 'listen-now': return (DATA.recents || []).slice(0, 12);
+      case 'tracks':     return DATA.libraryTracks || [];
+      case 'playlists':  return DATA.playlists || [];
+      case 'albums':     return DATA.albums || [];
+      case 'artists':    return DATA.artists || [];
+      case 'radio':      return DATA.stations || [];
       default:           return [];
     }
-  }, [section, s]); // re-eval when store updates (libraries populated async)
+  }, [section, s]);
+
+  const current = drillStack[drillStack.length - 1] || null;
+  const items = current ? current.children : baseItems;
+
+  const drillInto = async (item) => {
+    const id = item._mass?.media_content_id || item.id;
+    if (!id || !window.MA?.browse) return;
+    setDrillLoading(true);
+    try {
+      const children = await window.MA.browse(id);
+      setDrillStack((stack) => [...stack, { item, children }]);
+    } finally {
+      setDrillLoading(false);
+    }
+  };
+
+  // Search results dispatch this event when the user picks an artist/album/playlist.
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) drillInto(e.detail); };
+    window.addEventListener('sonos-remote:drill', handler);
+    return () => window.removeEventListener('sonos-remote:drill', handler);
+  }, [drillStack]);
+
+  const onItemClick = (it) => {
+    if (itemBehavior(it) === 'drill') drillInto(it);
+    else SonosActions.playTrack(it.id);
+  };
+
+  const goBack = () => setDrillStack((s) => s.slice(0, -1));
+  const exitDrill = () => setDrillStack([]);
+  const playCurrent = () => current && SonosActions.playTrack(current.item.id);
 
   return (
     <div style={panel(tk)}>
       <div style={{ padding: '16px 16px 6px' }}>
-        <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
-          <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--obs-accent)', whiteSpace: 'nowrap' }}>
-            Apple Music
-          </div>
-          <button style={{ ...ghostBtn(tk), padding: '3px 8px' }}><Icons.Search size={11} /></button>
-        </div>
-        <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
-          {LIB_SECTIONS.map((sec) => (
-            <button key={sec.id} onClick={() => setSection(sec.id)} style={{
-              padding: '5px 9px', fontSize: 11.5, fontWeight: 500,
-              borderRadius: 999, border: 0, cursor: 'pointer',
-              background: section === sec.id ? tk.surfaceStrong : 'transparent',
-              color: section === sec.id ? tk.text : tk.text2,
-              whiteSpace: 'nowrap',
-            }}>{sec.label}</button>
-          ))}
-        </div>
+        {current ? (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <button onClick={goBack} style={{ ...ghostBtn(tk), padding: '4px 8px' }}>
+                ← Back
+              </button>
+              {drillStack.length > 1 && (
+                <button onClick={exitDrill} style={{ ...ghostBtn(tk), padding: '4px 8px' }}>
+                  Library
+                </button>
+              )}
+              <div style={{ flex: 1 }} />
+              <button onClick={playCurrent} style={{
+                ...ghostBtn(tk), padding: '4px 10px',
+                background: 'var(--obs-accent)', color: tk.isDark ? '#0a0a0a' : '#fff',
+                border: 0, fontWeight: 600,
+              }}>
+                <Icons.Play size={11} /> Play
+              </button>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 12 }}>
+              <AlbumArt art={current.item.art} title={current.item.title} size={48} radius={10} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
+                              overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {current.item.title}
+                </div>
+                <div style={{ fontSize: 11, color: tk.text3, textTransform: 'uppercase',
+                              letterSpacing: '0.12em', marginTop: 2 }}>
+                  {current.item._mass?.media_content_type || 'Browse'}
+                </div>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ display: 'flex', alignItems: 'baseline', justifyContent: 'space-between', gap: 8 }}>
+              <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--obs-accent)', whiteSpace: 'nowrap' }}>
+                Apple Music
+              </div>
+            </div>
+            <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 3 }}>
+              {LIB_SECTIONS.map((sec) => (
+                <button key={sec.id} onClick={() => setSection(sec.id)} style={{
+                  padding: '5px 9px', fontSize: 11.5, fontWeight: 500,
+                  borderRadius: 999, border: 0, cursor: 'pointer',
+                  background: section === sec.id ? tk.surfaceStrong : 'transparent',
+                  color: section === sec.id ? tk.text : tk.text2,
+                  whiteSpace: 'nowrap',
+                }}>{sec.label}</button>
+              ))}
+            </div>
+          </>
+        )}
       </div>
       <div style={{ overflowY: 'auto', flex: 1, padding: '6px 14px 14px' }}>
-        {items.map((it) => (
-          <button key={it.id} onClick={() => SonosActions.playTrack(it.id)} style={{
-            display: 'flex', alignItems: 'center', gap: 12,
-            width: '100%', padding: '8px', border: 0, background: 'transparent',
-            color: tk.text, cursor: 'pointer', borderRadius: 12,
-            textAlign: 'left',
-          }}>
-            <AlbumArt art={it.art} title={it.title} size={48} radius={10} />
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div style={{ fontSize: 13, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.005em' }}>{it.title}</div>
-              <div style={{ fontSize: 11.5, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.subtitle}</div>
-            </div>
-            <Icons.Play size={14} style={{ opacity: 0.5 }} />
-          </button>
-        ))}
+        {drillLoading && (
+          <div style={{ padding: '20px', textAlign: 'center', color: tk.text3, fontSize: 12 }}>
+            Loading…
+          </div>
+        )}
+        {!drillLoading && items.length === 0 && (
+          <div style={{ padding: '20px', textAlign: 'center', color: tk.text3, fontSize: 12 }}>
+            {current ? 'Empty.' : 'Library still loading from Music Assistant…'}
+          </div>
+        )}
+        {items.map((it) => {
+          const behavior = itemBehavior(it);
+          return (
+            <button key={it.id} onClick={() => onItemClick(it)} style={{
+              display: 'flex', alignItems: 'center', gap: 12,
+              width: '100%', padding: '8px', border: 0, background: 'transparent',
+              color: tk.text, cursor: 'pointer', borderRadius: 12,
+              textAlign: 'left',
+            }}>
+              <AlbumArt art={it.art} title={it.title} size={48} radius={10} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', letterSpacing: '-0.005em' }}>{it.title}</div>
+                <div style={{ fontSize: 11.5, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {it.artist || it.subtitle || ''}
+                </div>
+              </div>
+              {behavior === 'play'
+                ? <Icons.Play size={14} style={{ opacity: 0.5 }} />
+                : <span style={{ opacity: 0.5, fontSize: 14 }}>›</span>}
+            </button>
+          );
+        })}
       </div>
     </div>
   );
@@ -608,8 +704,14 @@ function TopbarSearch({ tk }) {
     return () => document.removeEventListener('mousedown', onDocDown);
   }, [focused]);
 
-  const play = (item) => {
-    window.massPlay?.(item);
+  const onPick = (item) => {
+    const type = (item._mass?.media_content_type || '').toLowerCase();
+    const drill = type === 'artist' || type === 'album' || type === 'playlist';
+    if (drill) {
+      window.dispatchEvent(new CustomEvent('sonos-remote:drill', { detail: item }));
+    } else {
+      window.massPlay?.(item);
+    }
     setQ('');
     setFocused(false);
     inputRef.current?.blur();

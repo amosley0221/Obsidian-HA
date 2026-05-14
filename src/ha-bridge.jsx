@@ -18,14 +18,32 @@
     const mediaPlayers = entityRegistry.filter(
       (e) => e.entity_id.startsWith('media_player.') && !e.disabled_by && !e.hidden_by
     );
-    // The HA-core MA integration uses platform 'music_assistant'; the older
-    // HACS custom_component used 'mass'. Match either.
-    const massEntities = mediaPlayers.filter(
+    // Native Sonos integration entities — used to identify which players
+    // are actually Sonos speakers (MA wraps everything: TVs, MacBooks, etc.).
+    const sonosNativeEntities = mediaPlayers.filter((e) => e.platform === 'sonos');
+    const sonosNamesLower = new Set();
+    for (const e of sonosNativeEntities) {
+      const name = stateById.get(e.entity_id)?.attributes?.friendly_name;
+      if (name) sonosNamesLower.add(name.toLowerCase());
+    }
+
+    const allMaEntities = mediaPlayers.filter(
       (e) => e.platform === 'music_assistant' || e.platform === 'mass'
     );
-    const sonosEntities = mediaPlayers.filter((e) => e.platform === 'sonos');
-    const usingMass = massEntities.length > 0;
-    const chosen = (usingMass ? massEntities : sonosEntities)
+    // If we have native Sonos entries, narrow MA entities down to those whose
+    // friendly name matches a Sonos speaker (filters out TVs, MacBooks, etc.).
+    let maEntities = allMaEntities;
+    if (sonosNamesLower.size > 0) {
+      maEntities = allMaEntities.filter((e) => {
+        const name = stateById.get(e.entity_id)?.attributes?.friendly_name?.toLowerCase();
+        return name && sonosNamesLower.has(name);
+      });
+      console.log('[sonos-remote] Narrowed MA entities to Sonos:',
+        maEntities.length, 'of', allMaEntities.length);
+    }
+
+    const usingMass = maEntities.length > 0;
+    const chosen = (usingMass ? maEntities : sonosNativeEntities)
       .filter((e) => stateById.has(e.entity_id));
     chosen.sort((a, b) => {
       const an = stateById.get(a.entity_id).attributes.friendly_name || a.entity_id;
@@ -262,37 +280,44 @@
       return shelves;
     }
     console.log('[sonos-remote] Browse root has', (root.children || []).length, 'children');
+    if (root.children) {
+      console.log('[sonos-remote] Root branches:', root.children.map((c) => c.title).join(' / '));
+    }
 
     const visited = new Set();
+    const MAX_DEPTH = 5;
+    const PER_BUCKET = 40;
+
     async function walk(node, depth) {
-      if (depth > 3) return;
-      if (!node || !node.media_content_id || visited.has(node.media_content_id)) {
-        // top-level root has no id; that's fine — caller already supplied children
-      } else {
+      if (depth > MAX_DEPTH) return;
+      if (node?.media_content_id) {
+        if (visited.has(node.media_content_id)) return;
         visited.add(node.media_content_id);
       }
-      const data = node.children ? node : (node.media_content_id ? await browse(ha, entityId, node.media_content_id) : null);
+      const data = node.children
+        ? node
+        : (node.media_content_id ? await browse(ha, entityId, node.media_content_id) : null);
       const children = data?.children || [];
       for (const child of children) {
         const cls = (child.media_class || '').toLowerCase();
         const type = (child.media_content_type || '').toLowerCase();
-        // Classify by class/type
+        // Classify by media_class / media_content_type. Note: MA often uses
+        // media_class='music' for tracks and 'directory' for navigable nodes.
         if (cls === 'playlist' || type === 'playlist') {
-          if (shelves.playlists.length < 40) shelves.playlists.push(shelfFromBrowseNode(child));
+          if (shelves.playlists.length < PER_BUCKET) shelves.playlists.push(shelfFromBrowseNode(child));
         } else if (cls === 'album' || type === 'album') {
-          if (shelves.albums.length < 40) shelves.albums.push(shelfFromBrowseNode(child));
+          if (shelves.albums.length < PER_BUCKET) shelves.albums.push(shelfFromBrowseNode(child));
         } else if (cls === 'artist' || type === 'artist') {
-          if (shelves.artists.length < 40) shelves.artists.push(shelfFromBrowseNode(child));
+          if (shelves.artists.length < PER_BUCKET) shelves.artists.push(shelfFromBrowseNode(child));
         } else if (cls === 'track' || cls === 'music' || type === 'track' || type === 'music') {
-          if (shelves.tracks.length < 40) shelves.tracks.push(shelfFromBrowseNode(child));
-        } else if (cls === 'channel' || type === 'radio' || cls === 'radio') {
-          if (shelves.radios.length < 40) shelves.radios.push(shelfFromBrowseNode(child));
-        } else if (child.can_expand && depth < 3) {
-          // Directory — drill in
+          if (shelves.tracks.length < PER_BUCKET) shelves.tracks.push(shelfFromBrowseNode(child));
+        } else if (type === 'radio' || cls === 'radio' || cls === 'channel') {
+          if (shelves.radios.length < PER_BUCKET) shelves.radios.push(shelfFromBrowseNode(child));
+        } else if (child.can_expand && depth < MAX_DEPTH) {
+          // Directory / category → drill in
           await walk(child, depth + 1);
         }
-        // Stop walking if every bucket is full
-        if (Object.values(shelves).every((b) => b.length >= 40)) return;
+        if (Object.values(shelves).every((b) => b.length >= PER_BUCKET)) return;
       }
     }
     await walk(root, 0);
@@ -370,6 +395,10 @@
     window.MA = {
       browseEntity: entityId,
       search: (q) => searchViaMediaPlayer(ha, entityId, q),
+      browse: async (mediaContentId) => {
+        const result = await browse(ha, entityId, mediaContentId);
+        return (result?.children || []).map(shelfFromBrowseNode);
+      },
     };
 
     window.haDebug = {

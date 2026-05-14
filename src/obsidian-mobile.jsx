@@ -12,6 +12,14 @@ function ObsidianMobile({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
   const [expanded, setExpanded] = useState(false);
   const [queueOpen, setQueueOpen] = useState(false);
 
+  // Drill events (from search) switch to the Library tab so the drill view
+  // is visible — OMLibrary itself listens to populate its drill stack.
+  useEffect(() => {
+    const handler = () => setTab('library');
+    window.addEventListener('sonos-remote:drill', handler);
+    return () => window.removeEventListener('sonos-remote:drill', handler);
+  }, []);
+
   const dark = theme === 'dark';
   const glow = track?.art?.dominant || (dark ? 'oklch(0.48 0.10 250)' : 'oklch(0.78 0.10 250)');
   const shadow = track?.art?.shadow || (dark ? 'oklch(0.28 0.10 250)' : 'oklch(0.62 0.10 250)');
@@ -565,36 +573,127 @@ const OM_CATS = [
   { id: 'stations',  label: 'Radio',           items: 'stations' },
 ];
 
+function omItemBehavior(it) {
+  const type = (it._mass?.media_content_type || '').toLowerCase();
+  if (type === 'track' || type === 'music') return 'play';
+  if (type === 'artist' || type === 'album' || type === 'playlist') return 'drill';
+  if (type === 'radio') return 'play';
+  if (it.canExpand || it._mass?.can_expand) return 'drill';
+  return 'play';
+}
+
 function OMLibrary({ tk }) {
   const s = useSonos();
   const [cat, setCat] = useState('recent');
-  const items = DATA[OM_CATS.find((c) => c.id === cat).items] || [];
+  const [drillStack, setDrillStack] = useState([]);
+  const [drillLoading, setDrillLoading] = useState(false);
+
+  const current = drillStack[drillStack.length - 1] || null;
+  const baseItems = DATA[OM_CATS.find((c) => c.id === cat).items] || [];
+  const items = current ? current.children : baseItems;
+
+  const drillInto = async (item) => {
+    const id = item._mass?.media_content_id || item.id;
+    if (!id || !window.MA?.browse) return;
+    setDrillLoading(true);
+    try {
+      const children = await window.MA.browse(id);
+      setDrillStack((stk) => [...stk, { item, children }]);
+    } finally {
+      setDrillLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    const handler = (e) => { if (e.detail) drillInto(e.detail); };
+    window.addEventListener('sonos-remote:drill', handler);
+    return () => window.removeEventListener('sonos-remote:drill', handler);
+  }, []);
+
+  const onItemClick = (it) => {
+    if (omItemBehavior(it) === 'drill') drillInto(it);
+    else SonosActions.playTrack(it.id);
+  };
+
+  const goBack = () => setDrillStack((stk) => stk.slice(0, -1));
+  const exitDrill = () => setDrillStack([]);
+  const playCurrent = () => current && SonosActions.playTrack(current.item.id);
+
   return (
     <div style={{ padding: '54px 20px 0' }}>
-      <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--om-accent)' }}>
-        Apple Music
-      </div>
-      <h1 style={{ margin: '2px 0 0', fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Library</h1>
+      {current ? (
+        <>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button onClick={goBack} style={{
+              padding: '6px 12px', fontSize: 12, fontWeight: 540,
+              background: tk.surface, color: tk.text,
+              border: `0.5px solid ${tk.border}`, borderRadius: 999,
+              cursor: 'pointer',
+            }}>← Back</button>
+            {drillStack.length > 1 && (
+              <button onClick={exitDrill} style={{
+                padding: '6px 12px', fontSize: 12, fontWeight: 540,
+                background: tk.surface, color: tk.text,
+                border: `0.5px solid ${tk.border}`, borderRadius: 999,
+                cursor: 'pointer',
+              }}>Library</button>
+            )}
+          </div>
+          <div style={{ marginTop: 14, display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+            <AlbumArt art={current.item.art} title={current.item.title} size={100} radius={14} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.14em',
+                            textTransform: 'uppercase', color: 'var(--om-accent)' }}>
+                {current.item._mass?.media_content_type || 'Browse'}
+              </div>
+              <h1 style={{ margin: '2px 0 0', fontSize: 22, fontWeight: 600, letterSpacing: '-0.02em', lineHeight: 1.1 }}>
+                {current.item.title}
+              </h1>
+              <button onClick={playCurrent} style={{
+                marginTop: 10, padding: '8px 18px', fontSize: 13, fontWeight: 600,
+                background: 'var(--om-accent)', color: tk.invertIcon,
+                border: 0, borderRadius: 999, cursor: 'pointer',
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                <Icons.Play size={12} /> Play
+              </button>
+            </div>
+          </div>
+        </>
+      ) : (
+        <>
+          <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--om-accent)' }}>
+            Apple Music
+          </div>
+          <h1 style={{ margin: '2px 0 0', fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Library</h1>
+          <div style={{ marginTop: 16, display: 'flex', gap: 6, overflowX: 'auto',
+                        margin: '16px -20px 0', padding: '0 20px' }}>
+            {OM_CATS.map((c) => (
+              <button key={c.id} onClick={() => setCat(c.id)} style={{
+                flex: '0 0 auto', padding: '7px 13px',
+                fontSize: 12.5, fontWeight: 540, letterSpacing: '-0.01em',
+                background: cat === c.id ? tk.surfaceStrong : tk.surface,
+                color: cat === c.id ? tk.text : tk.text2,
+                border: `0.5px solid ${tk.border}`,
+                borderRadius: 999, cursor: 'pointer', whiteSpace: 'nowrap',
+              }}>{c.label}</button>
+            ))}
+          </div>
+        </>
+      )}
 
-      <div style={{ marginTop: 16, display: 'flex', gap: 6, overflowX: 'auto',
-                    margin: '16px -20px 0', padding: '0 20px' }}>
-        {OM_CATS.map((c) => (
-          <button key={c.id} onClick={() => setCat(c.id)} style={{
-            flex: '0 0 auto', padding: '7px 13px',
-            fontSize: 12.5, fontWeight: 540, letterSpacing: '-0.01em',
-            background: cat === c.id ? tk.surfaceStrong : tk.surface,
-            color: cat === c.id ? tk.text : tk.text2,
-            border: `0.5px solid ${tk.border}`,
-            borderRadius: 999, cursor: 'pointer', whiteSpace: 'nowrap',
-          }}>{c.label}</button>
-        ))}
-      </div>
+      {drillLoading && (
+        <div style={{ marginTop: 24, color: tk.text3, fontSize: 13, textAlign: 'center' }}>Loading…</div>
+      )}
+      {!drillLoading && items.length === 0 && (
+        <div style={{ marginTop: 24, color: tk.text3, fontSize: 13, textAlign: 'center' }}>
+          {current ? 'Empty.' : 'Library still loading…'}
+        </div>
+      )}
 
       <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         {items.map((it) => (
-          <button key={it.id} onClick={() => {
-            SonosActions.playTrack(it.id);
-          }} style={{
+          <button key={it.id} onClick={() => onItemClick(it)} style={{
             background: 'transparent', border: 0, padding: 0, cursor: 'pointer',
             color: tk.text, textAlign: 'left',
           }}>
@@ -633,7 +732,14 @@ function OMSearch({ tk }) {
     return () => clearTimeout(timer.current);
   }, [q]);
 
-  const play = (item) => window.massPlay?.(item);
+  const onPick = (item) => {
+    const type = (item._mass?.media_content_type || '').toLowerCase();
+    if (type === 'artist' || type === 'album' || type === 'playlist') {
+      window.dispatchEvent(new CustomEvent('sonos-remote:drill', { detail: item }));
+    } else {
+      window.massPlay?.(item);
+    }
+  };
 
   const buckets = [
     { label: 'Tracks',    items: results.tracks },
@@ -677,7 +783,7 @@ function OMSearch({ tk }) {
           <h3 style={omShelfTitle(tk)}>{b.label}</h3>
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column' }}>
             {b.items.map((it) => (
-              <button key={it.id} onClick={() => play(it)} style={{
+              <button key={it.id} onClick={() => onPick(it)} style={{
                 display: 'flex', alignItems: 'center', gap: 12,
                 padding: '10px 0', background: 'transparent', border: 0,
                 color: tk.text, cursor: 'pointer', textAlign: 'left',
