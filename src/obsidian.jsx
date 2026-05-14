@@ -473,12 +473,21 @@ function ObsidianRooms({ tk }) {
       setHoverRoom(hit && hit !== drag.id ? hit : null);
       return;
     }
-    // Mouse/pen: arm-then-start once movement exceeds a small threshold.
     const pi = pressInfo.current;
-    if (pi && pi.pointerType !== 'touch') {
-      const dx = e.clientX - pi.startX;
-      const dy = e.clientY - pi.startY;
-      if (Math.sqrt(dx * dx + dy * dy) > 5) {
+    if (!pi) return;
+    const dx = e.clientX - pi.startX;
+    const dy = e.clientY - pi.startY;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (pi.pointerType === 'touch') {
+      // User is scrolling, not long-pressing — cancel the timer so we
+      // don't accidentally lift a card when they release.
+      if (dist > 8) {
+        clearTimeout(longPressTimer.current);
+        pressInfo.current = null;
+      }
+    } else {
+      // Mouse/pen: arm-then-start once movement exceeds a small threshold.
+      if (dist > 5) {
         setDrag({ id: pi.id, x: e.clientX, y: e.clientY });
       }
     }
@@ -620,6 +629,7 @@ function RoomCard({ room, state, active, hovered, lifted, inGroup, isGroupMaster
       ref={cardRef}
       onClick={onClick}
       onPointerDown={onPointerDown}
+      onContextMenu={(e) => e.preventDefault()}
       style={{
         position: 'relative',
         padding: '10px 10px 10px',
@@ -629,7 +639,14 @@ function RoomCard({ room, state, active, hovered, lifted, inGroup, isGroupMaster
         opacity: lifted ? 0.4 : 1,
         transform: hovered ? 'scale(.985)' : 'scale(1)',
         boxShadow: hovered ? '0 0 0 1.5px var(--obs-accent), 0 0 0 5px color-mix(in oklab, var(--obs-accent) 22%, transparent)' : 'none',
-        touchAction: 'manipulation',
+        // Prevent Android Chrome's long-press → text-selection / context-menu
+        // hijack so a long-press fires our drag instead. pan-y still allows
+        // vertical scrolling on touch.
+        touchAction: 'pan-y',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+        WebkitTapHighlightColor: 'transparent',
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{

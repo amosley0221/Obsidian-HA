@@ -323,7 +323,7 @@
 
     const visited = new Set();
     const MAX_DEPTH = 6;
-    const PER_BUCKET = 60;
+    const PER_BUCKET = 500;
 
     // typeHint is set when a parent branch's title indicates what its
     // children should be ('Artists' → typeHint='artist'). MA tags artist /

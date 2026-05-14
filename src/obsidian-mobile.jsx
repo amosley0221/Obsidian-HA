@@ -511,6 +511,7 @@ const OMRoomCard = React.forwardRef(function OMRoomCard(
     <div ref={ref}
       onClick={onTap}
       onPointerDown={onPointerDown}
+      onContextMenu={(e) => e.preventDefault()}
       style={{
         position: 'relative',
         padding: '12px',
@@ -524,7 +525,11 @@ const OMRoomCard = React.forwardRef(function OMRoomCard(
           ? `0 0 0 2px var(--om-accent), 0 0 0 6px color-mix(in oklab, var(--om-accent) 25%, transparent)`
           : 'none',
         transition: 'transform 160ms, box-shadow 160ms, opacity 160ms',
-        touchAction: 'none',
+        touchAction: 'pan-y',
+        userSelect: 'none',
+        WebkitUserSelect: 'none',
+        WebkitTouchCallout: 'none',
+        WebkitTapHighlightColor: 'transparent',
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
         {/* Drag handle */}
