@@ -13,9 +13,13 @@ const isIpad = (() => {
 })();
 
 function useViewport() {
-  const [vw, setVw] = useState(typeof window !== 'undefined' ? window.innerWidth : 1440);
+  const read = () => ({
+    w: typeof window !== 'undefined' ? window.innerWidth : 1440,
+    h: typeof window !== 'undefined' ? window.innerHeight : 900,
+  });
+  const [vp, setVp] = useState(read);
   useEffect(() => {
-    const onResize = () => setVw(window.innerWidth);
+    const onResize = () => setVp(read());
     window.addEventListener('resize', onResize);
     window.addEventListener('orientationchange', onResize);
     return () => {
@@ -23,7 +27,7 @@ function useViewport() {
       window.removeEventListener('orientationchange', onResize);
     };
   }, []);
-  return vw;
+  return vp;
 }
 
 const THEME_KEY = 'sonos-remote-theme';
@@ -68,8 +72,10 @@ function ConnectingScreen({ status }) {
 
 function App() {
   const [theme, setTheme] = useTheme();
-  const vw = useViewport();
-  const isMobile = !isIpad && vw < 700;
+  const { w: vw, h: vh } = useViewport();
+  // iPad → desktop only in landscape; portrait gets the mobile column.
+  // Other devices → desktop at >= 700px wide.
+  const isMobile = isIpad ? vw <= vh : vw < 700;
   const store = useSonos();
   const roomCount = Object.keys(store.rooms).length;
 
