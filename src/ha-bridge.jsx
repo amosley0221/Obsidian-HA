@@ -10,6 +10,22 @@
   // populated once rooms are discovered.
   let BROWSE_ENTITY = null;
 
+  // Recently-touched entities. After the user joins/unjoins rooms we don't
+  // want incoming state_changed events to clobber the optimistic groupId
+  // before HA has actually finished processing the join (HA fires
+  // state_changed with stale group_members during the operation).
+  const PENDING_GROUP_OPS = new Map(); // entity_id -> expiry timestamp (ms)
+  const GROUP_GRACE_MS = 3000;
+  const markPendingGroup = (entityId) => {
+    PENDING_GROUP_OPS.set(entityId, Date.now() + GROUP_GRACE_MS);
+  };
+  const isGroupPending = (entityId) => {
+    const expiry = PENDING_GROUP_OPS.get(entityId);
+    if (!expiry) return false;
+    if (Date.now() > expiry) { PENDING_GROUP_OPS.delete(entityId); return false; }
+    return true;
+  };
+
   // ── Entity discovery ────────────────────────────────────────────────────
   // Prefer Music Assistant-managed players if any exist (so MA play_media
   // works); fall back to native Sonos. Returns array of entity_id strings.
@@ -115,7 +131,12 @@
       r.playing = haState.state === 'playing';
       r.muted = !!a.is_volume_muted;
       r.source = a.source || null;
-      r.groupId = groupKeyFor(haState);
+      // Skip groupId reconcile during the optimistic grace window — HA
+      // tends to fire stale state_changed events while a join/unjoin is
+      // in flight, which would clobber the just-set optimistic value.
+      if (!isGroupPending(eid)) {
+        r.groupId = groupKeyFor(haState);
+      }
 
       const fallbackArt = AlbumColor.fallbackArt(a.media_title || a.media_album_name || eid);
       const { track, playhead } = deriveTrack(haState, fallbackArt);
@@ -502,8 +523,10 @@
         });
       },
       groupRooms(roomA, roomB) {
-        // Optimistic local update so the room cards regroup immediately;
-        // the HA state_changed event will reconcile a moment later.
+        // Mark both entities pending so the next ~3s of state_changed
+        // events don't blow away the optimistic group we're about to set.
+        markPendingGroup(roomA);
+        markPendingGroup(roomB);
         SonosStore.update((s) => {
           const a = s.rooms[roomA]; const b = s.rooms[roomB];
           if (!a || !b) return;
@@ -516,10 +539,29 @@
         });
       },
       ungroup(roomId) {
-        // Optimistic: drop the room from its group immediately so the UI
-        // reflects the leave without waiting for the WS state_changed echo.
         SonosStore.update((s) => {
-          if (s.rooms[roomId]) s.rooms[roomId].groupId = null;
+          const room = s.rooms[roomId];
+          if (!room) return;
+          const oldGid = room.groupId;
+          markPendingGroup(roomId);
+          room.groupId = null;
+          // If the group is now down to a single member, dissolve it too —
+          // a "group" of one isn't a group, and HA's state_changed echo will
+          // reflect that too once it catches up.
+          if (oldGid) {
+            const remaining = Object.entries(s.rooms)
+              .filter(([id, r]) => r.groupId === oldGid);
+            if (remaining.length <= 1) {
+              remaining.forEach(([id, r]) => {
+                markPendingGroup(id);
+                r.groupId = null;
+              });
+            } else {
+              // Mark remaining members pending too so their group_members
+              // reconcile doesn't snap the just-left member back in.
+              remaining.forEach(([id]) => markPendingGroup(id));
+            }
+          }
         });
         ha.callService('media_player', 'unjoin', { entity_id: roomId });
       },
