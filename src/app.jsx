@@ -93,6 +93,26 @@ function App() {
     }
   }, []);
 
+  // On first mount, check for a server-side auth.json (drop one in
+  // /config/www/sonos-remote/auth.json with { url, token }) so every
+  // device that loads the dashboard auto-authenticates without having
+  // to paste a token. Server file always wins over localStorage so
+  // updating the token on the server propagates everywhere.
+  useEffect(() => {
+    let cancelled = false;
+    fetch('./auth.json', { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (cancelled || !data?.token) return;
+        const url = data.url || window.location.origin;
+        if (config.token === data.token && config.url === url) return;
+        saveSetup({ url, token: data.token });
+        setConfig({ url, token: data.token });
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
   useEffect(() => {
     if (!config.token) { setStatus('idle'); return; }
     let cancelled = false;

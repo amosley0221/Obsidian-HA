@@ -1,0 +1,4 @@
+# Server-side credentials — never commit. Place a file named auth.json
+# in this same folder (next to index.html) on your HA box if you want
+# all devices to auto-authenticate without pasting the token per device.
+auth.json
