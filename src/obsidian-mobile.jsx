@@ -558,14 +558,17 @@ const OMRoomCard = React.forwardRef(function OMRoomCard(
 // ─── Library tab ───────────────────────────────────────────────────────
 const OM_CATS = [
   { id: 'recent',    label: 'Recently Played', items: 'recents'  },
+  { id: 'tracks',    label: 'Tracks',          items: 'libraryTracks' },
   { id: 'playlists', label: 'Playlists',       items: 'playlists' },
   { id: 'albums',    label: 'Albums',          items: 'albums'   },
-  { id: 'stations',  label: 'Stations',        items: 'stations' },
+  { id: 'artists',   label: 'Artists',         items: 'artists'  },
+  { id: 'stations',  label: 'Radio',           items: 'stations' },
 ];
 
 function OMLibrary({ tk }) {
+  const s = useSonos();
   const [cat, setCat] = useState('recent');
-  const items = DATA[OM_CATS.find((c) => c.id === cat).items];
+  const items = DATA[OM_CATS.find((c) => c.id === cat).items] || [];
   return (
     <div style={{ padding: '54px 20px 0' }}>
       <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--om-accent)' }}>
@@ -590,8 +593,7 @@ function OMLibrary({ tk }) {
       <div style={{ marginTop: 18, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
         {items.map((it) => (
           <button key={it.id} onClick={() => {
-            const tr = DATA.tracks.find((t) => t.id === it.id) || DATA.tracks[Math.floor(Math.random() * DATA.tracks.length)];
-            SonosActions.playTrack(tr.id);
+            SonosActions.playTrack(it.id);
           }} style={{
             background: 'transparent', border: 0, padding: 0, cursor: 'pointer',
             color: tk.text, textAlign: 'left',
@@ -614,39 +616,68 @@ function OMLibrary({ tk }) {
 
 // ─── Search tab ────────────────────────────────────────────────────────
 function OMSearch({ tk }) {
+  const [q, setQ] = useState('');
+  const [results, setResults] = useState({ tracks: [], albums: [], artists: [], playlists: [] });
+  const [loading, setLoading] = useState(false);
+  const timer = useRef(null);
+
+  useEffect(() => {
+    clearTimeout(timer.current);
+    if (!q.trim()) { setResults({ tracks: [], albums: [], artists: [], playlists: [] }); return; }
+    if (!window.MA?.search) return;
+    setLoading(true);
+    timer.current = setTimeout(async () => {
+      try { setResults(await window.MA.search(q)); }
+      finally { setLoading(false); }
+    }, 240);
+    return () => clearTimeout(timer.current);
+  }, [q]);
+
+  const play = (item) => window.massPlay?.(item);
+
   const buckets = [
-    { label: 'Songs', items: DATA.tracks.slice(0, 4).map((t) => ({ id: t.id, title: t.title, sub: t.artist, art: t.art })) },
-    { label: 'Albums', items: DATA.albums.slice(0, 3).map((a) => ({ id: a.id, title: a.title, sub: a.artist, art: a.art })) },
-    { label: 'Playlists', items: DATA.playlists.slice(0, 3).map((p) => ({ id: p.id, title: p.title, sub: `${p.count} songs`, art: p.art })) },
-  ];
+    { label: 'Tracks',    items: results.tracks },
+    { label: 'Albums',    items: results.albums },
+    { label: 'Artists',   items: results.artists },
+    { label: 'Playlists', items: results.playlists },
+  ].filter((b) => b.items.length > 0);
+
   return (
     <div style={{ padding: '54px 20px 0' }}>
       <div style={{ fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--om-accent)' }}>
         Search
       </div>
-      <h1 style={{ margin: '2px 0 0', fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Find anything</h1>
+      <h1 style={{ margin: '2px 0 0', fontSize: 28, fontWeight: 600, letterSpacing: '-0.02em' }}>Apple Music</h1>
 
       <div style={{
         marginTop: 16, padding: '0 14px', height: 42,
         display: 'flex', alignItems: 'center', gap: 10,
         background: tk.surface, border: `0.5px solid ${tk.border}`,
-        borderRadius: 12, color: tk.text2, fontSize: 14,
+        borderRadius: 12, color: tk.text, fontSize: 14,
       }}>
-        <Icons.Search size={16} />
-        <span>Songs, albums, artists, playlists…</span>
-        <div style={{ flex: 1 }} />
-        <Icons.Mic size={16} style={{ opacity: 0.6 }} />
+        <Icons.Search size={16} style={{ opacity: 0.6 }} />
+        <input
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Songs, albums, artists, playlists…"
+          style={{
+            flex: 1, border: 0, outline: 'none',
+            background: 'transparent', color: tk.text,
+            fontSize: 14, fontFamily: 'inherit',
+          }} />
+        {loading && <span style={{ fontSize: 11, color: tk.text3 }}>…</span>}
       </div>
+
+      {buckets.length === 0 && q.trim() && !loading && (
+        <div style={{ marginTop: 24, color: tk.text3, fontSize: 13, textAlign: 'center' }}>No results.</div>
+      )}
 
       {buckets.map((b) => (
         <div key={b.label} style={{ marginTop: 22 }}>
           <h3 style={omShelfTitle(tk)}>{b.label}</h3>
           <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column' }}>
             {b.items.map((it) => (
-              <button key={it.id} onClick={() => {
-                const tr = DATA.tracks.find((t) => t.id === it.id) || DATA.tracks[0];
-                SonosActions.playTrack(tr.id);
-              }} style={{
+              <button key={it.id} onClick={() => play(it)} style={{
                 display: 'flex', alignItems: 'center', gap: 12,
                 padding: '10px 0', background: 'transparent', border: 0,
                 color: tk.text, cursor: 'pointer', textAlign: 'left',
@@ -658,7 +689,7 @@ function OMSearch({ tk }) {
                     {it.title}
                   </div>
                   <div style={{ fontSize: 12, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    {it.sub}
+                    {it.subtitle || it.artist}
                   </div>
                 </div>
                 <Icons.Play size={14} style={{ opacity: 0.5 }} />
@@ -787,10 +818,7 @@ function OMShelf({ items, tk }) {
       margin: '10px -20px 0', padding: '0 20px 4px',
     }}>
       {items.map((it) => (
-        <button key={it.id} onClick={() => {
-          const tr = DATA.tracks.find((t) => t.id === it.id) || DATA.tracks[Math.floor(Math.random() * DATA.tracks.length)];
-          SonosActions.playTrack(tr.id);
-        }} style={{
+        <button key={it.id} onClick={() => SonosActions.playTrack(it.id)} style={{
           flex: '0 0 auto', width: 144, scrollSnapAlign: 'start',
           background: 'transparent', border: 0, padding: 0, cursor: 'pointer',
           color: tk.text, textAlign: 'left',
