@@ -9,7 +9,6 @@ function Obsidian({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
   const track = sel.trackFor(s, s.activeRoomId);
   const phead = s.playhead[s.activeRoomId] || 0;
   const [queueOpen, setQueueOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [section, setSection] = useState('listen-now');
   const [expanded, setExpanded] = useState(false);
 
@@ -46,7 +45,7 @@ function Obsidian({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
         <ObsidianBackdrop track={track} glow={glow} shadow={shadow} tk={tk} mode={bgStyle} />
       )}
 
-      <ObsidianTopbar onQueue={() => setQueueOpen(true)} onSearch={() => setSearchOpen(true)} tk={tk} theme={theme} onThemeToggle={onThemeToggle} />
+      <ObsidianTopbar onQueue={() => setQueueOpen(true)} tk={tk} theme={theme} onThemeToggle={onThemeToggle} />
 
       <div style={{
         position: 'absolute', inset: '56px var(--obs-pad) var(--obs-pad)',
@@ -61,7 +60,6 @@ function Obsidian({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
       </div>
 
       <QueueSheet open={queueOpen} onClose={() => setQueueOpen(false)} theme={dark ? 'dark' : 'light'} />
-      {searchOpen && <SearchOverlay tk={tk} onClose={() => setSearchOpen(false)} />}
       {expanded && <ObsidianFullscreen track={track} phead={phead} active={active} onClose={() => setExpanded(false)} tk={tk} />}
     </div>
   );
@@ -151,7 +149,7 @@ function ObsidianBackdrop({ track, glow, shadow, tk, mode }) {
 }
 
 // ─── Topbar ─────────────────────────────────────────────────────────────
-function ObsidianTopbar({ onQueue, onSearch, tk, theme, onThemeToggle }) {
+function ObsidianTopbar({ onQueue, tk, theme, onThemeToggle }) {
   const s = useSonos();
   const groupSize = sel.groupedWith(s, s.activeRoomId).length;
   const room = DATA.rooms.find((r) => r.id === s.activeRoomId);
@@ -172,23 +170,7 @@ function ObsidianTopbar({ onQueue, onSearch, tk, theme, onThemeToggle }) {
         <div style={{ opacity: 0.4, fontSize: 13, whiteSpace: 'nowrap' }}>· Home</div>
       </div>
 
-      <button onClick={onSearch} style={{
-        flex: '1 1 auto', minWidth: 0, maxWidth: 380,
-        display: 'flex', alignItems: 'center', gap: 10,
-        padding: '7px 14px', height: 34, boxSizing: 'border-box',
-        background: tk.surface,
-        border: `0.5px solid ${tk.border}`,
-        borderRadius: 999, fontSize: 13,
-        color: tk.text, cursor: 'pointer', textAlign: 'left',
-      }}>
-        <Icons.Search size={14} style={{ flexShrink: 0 }} />
-        <span style={{ flex: 1, opacity: 0.55, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>Search Apple Music…</span>
-        <span style={{
-          flexShrink: 0, padding: '1px 5px', borderRadius: 4,
-          border: `0.5px solid ${tk.border}`, fontSize: 10.5,
-          color: tk.text3, fontFamily: 'var(--font-mono)',
-        }}>⌘K</span>
-      </button>
+      <TopbarSearch tk={tk} />
 
       <button style={topBtn(tk)}>
         <Icons.AirPlay size={16} />
@@ -594,20 +576,15 @@ function PanelHeader({ title, trailing, tk }) {
   );
 }
 
-// ─── Search overlay (Spotlight-style, MA-backed) ───────────────────────
-function SearchOverlay({ tk, onClose }) {
+// ─── Inline topbar search (live MA results dropdown) ──────────────────
+function TopbarSearch({ tk }) {
   const [q, setQ] = useState('');
   const [results, setResults] = useState({ tracks: [], albums: [], artists: [], playlists: [] });
   const [loading, setLoading] = useState(false);
+  const [focused, setFocused] = useState(false);
   const inputRef = useRef(null);
+  const wrapRef = useRef(null);
   const timer = useRef(null);
-
-  useEffect(() => {
-    inputRef.current?.focus();
-    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, []);
 
   useEffect(() => {
     clearTimeout(timer.current);
@@ -615,15 +592,28 @@ function SearchOverlay({ tk, onClose }) {
     if (!window.MA?.search) return;
     setLoading(true);
     timer.current = setTimeout(async () => {
-      try {
-        const r = await window.MA.search(q);
-        setResults(r);
-      } finally { setLoading(false); }
+      try { setResults(await window.MA.search(q)); }
+      finally { setLoading(false); }
     }, 220);
     return () => clearTimeout(timer.current);
   }, [q]);
 
-  const play = (item) => { window.massPlay?.(item); onClose(); };
+  // Click outside → collapse
+  useEffect(() => {
+    if (!focused) return;
+    const onDocDown = (e) => {
+      if (!wrapRef.current?.contains(e.target)) setFocused(false);
+    };
+    document.addEventListener('mousedown', onDocDown);
+    return () => document.removeEventListener('mousedown', onDocDown);
+  }, [focused]);
+
+  const play = (item) => {
+    window.massPlay?.(item);
+    setQ('');
+    setFocused(false);
+    inputRef.current?.blur();
+  };
 
   const sections = [
     { label: 'Tracks',    items: results.tracks },
@@ -632,91 +622,100 @@ function SearchOverlay({ tk, onClose }) {
     { label: 'Playlists', items: results.playlists },
   ].filter((s) => s.items.length > 0);
 
+  const showDropdown = focused && q.trim().length > 0;
+
   return (
-    <div onClick={onClose} style={{
-      position: 'absolute', inset: 0, zIndex: 60,
-      background: tk.isDark ? 'rgba(0,0,0,.55)' : 'rgba(244,243,239,.55)',
-      backdropFilter: 'blur(20px) saturate(160%)',
-      WebkitBackdropFilter: 'blur(20px) saturate(160%)',
-      animation: 'obs-fade 180ms ease',
-      padding: '64px 0 0',
-      display: 'flex', justifyContent: 'center',
+    <div ref={wrapRef} style={{
+      position: 'relative', flex: '1 1 auto', minWidth: 0, maxWidth: 420,
     }}>
-      <div onClick={(e) => e.stopPropagation()} style={{
-        width: 'min(720px, 92%)', maxHeight: 'calc(100% - 96px)',
-        background: tk.isDark ? 'rgba(20,20,22,.92)' : 'rgba(255,255,255,.92)',
-        border: `0.5px solid ${tk.border}`,
-        borderRadius: 20, color: tk.text,
-        boxShadow: '0 24px 80px rgba(0,0,0,.4)',
-        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 10,
+        padding: '7px 14px', height: 34, boxSizing: 'border-box',
+        background: tk.surface,
+        border: `0.5px solid ${focused ? 'var(--obs-accent)' : tk.border}`,
+        borderRadius: 999, fontSize: 13,
+        transition: 'border-color 140ms',
       }}>
-        <div style={{
-          display: 'flex', alignItems: 'center', gap: 10,
-          padding: '14px 18px', borderBottom: `0.5px solid ${tk.border}`,
-        }}>
-          <Icons.Search size={18} style={{ opacity: 0.6 }} />
-          <input
-            ref={inputRef}
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search Apple Music…"
-            style={{
-              flex: 1, border: 0, outline: 'none',
-              background: 'transparent', color: tk.text,
-              fontSize: 18, fontFamily: 'inherit', letterSpacing: '-0.01em',
-            }} />
-          {loading && <div style={{ fontSize: 11, color: tk.text3 }}>Searching…</div>}
-          <button onClick={onClose} style={{
-            border: `0.5px solid ${tk.border}`, background: 'transparent',
-            color: tk.text2, padding: '3px 8px', borderRadius: 6,
-            fontSize: 11, fontFamily: 'var(--font-mono)', cursor: 'pointer',
-          }}>Esc</button>
-        </div>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '8px 10px 14px' }}>
-          {sections.length === 0 && q.trim() && !loading && (
-            <div style={{ padding: 24, textAlign: 'center', color: tk.text3, fontSize: 13 }}>
-              No results.
-            </div>
-          )}
-          {sections.length === 0 && !q.trim() && (
-            <div style={{ padding: 24, textAlign: 'center', color: tk.text3, fontSize: 13 }}>
-              Search Apple Music — songs, albums, artists, playlists.
-            </div>
-          )}
-          {sections.map((sec) => (
-            <div key={sec.label} style={{ marginTop: 10 }}>
-              <div style={{
-                fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em',
-                textTransform: 'uppercase', color: 'var(--obs-accent)',
-                padding: '6px 12px',
-              }}>{sec.label}</div>
-              {sec.items.map((it) => (
-                <button key={it.id} onClick={() => play(it)} style={{
-                  display: 'flex', alignItems: 'center', gap: 12,
-                  width: '100%', padding: '8px 12px', border: 0,
-                  background: 'transparent', color: tk.text, cursor: 'pointer',
-                  borderRadius: 12, textAlign: 'left',
-                }}>
-                  <AlbumArt art={it.art} title={it.title} size={40} radius={8} />
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ fontSize: 13.5, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {it.title}
-                    </div>
-                    {it.subtitle && (
-                      <div style={{ fontSize: 11.5, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {it.subtitle}
-                      </div>
-                    )}
-                  </div>
-                  <Icons.Play size={14} style={{ opacity: 0.5 }} />
-                </button>
-              ))}
-            </div>
-          ))}
-        </div>
+        <Icons.Search size={14} style={{ flexShrink: 0, opacity: 0.7 }} />
+        <input
+          ref={inputRef}
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onFocus={() => setFocused(true)}
+          onKeyDown={(e) => {
+            if (e.key === 'Escape') { setQ(''); setFocused(false); e.currentTarget.blur(); }
+          }}
+          placeholder="Search Apple Music…"
+          style={{
+            flex: 1, minWidth: 0, border: 0, outline: 'none',
+            background: 'transparent', color: tk.text,
+            fontSize: 13, fontFamily: 'inherit',
+          }} />
+        {loading && <span style={{ flexShrink: 0, fontSize: 10.5, color: tk.text3, fontFamily: 'var(--font-mono)' }}>…</span>}
+        {q && !loading && (
+          <button onClick={() => { setQ(''); inputRef.current?.focus(); }}
+            style={{ border: 0, background: 'transparent', color: tk.text3, cursor: 'pointer', padding: 0, display: 'grid', placeItems: 'center' }}
+            aria-label="Clear search">
+            <Icons.Close size={13} />
+          </button>
+        )}
       </div>
+
+      {showDropdown && (
+        <div style={{
+          position: 'absolute', top: 'calc(100% + 8px)', left: 0,
+          width: 'min(560px, calc(100vw - 32px))',
+          maxHeight: 'calc(100vh - 96px)',
+          background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
+          backdropFilter: 'blur(30px) saturate(180%)',
+          WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+          border: `0.5px solid ${tk.border}`,
+          borderRadius: 16, color: tk.text,
+          boxShadow: '0 24px 60px rgba(0,0,0,.4)',
+          overflow: 'hidden', display: 'flex', flexDirection: 'column',
+          zIndex: 50,
+        }}>
+          <div style={{ overflowY: 'auto', padding: '8px 8px 12px', flex: 1 }}>
+            {sections.length === 0 && !loading && (
+              <div style={{ padding: 20, textAlign: 'center', color: tk.text3, fontSize: 13 }}>
+                No results.
+              </div>
+            )}
+            {sections.map((sec) => (
+              <div key={sec.label} style={{ marginTop: 4 }}>
+                <div style={{
+                  fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', color: 'var(--obs-accent)',
+                  padding: '8px 12px 4px',
+                }}>{sec.label}</div>
+                {sec.items.map((it) => (
+                  <button key={it.id} onClick={() => play(it)} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    width: '100%', padding: '6px 10px', border: 0,
+                    background: 'transparent', color: tk.text, cursor: 'pointer',
+                    borderRadius: 10, textAlign: 'left',
+                  }}>
+                    <AlbumArt art={it.art} title={it.title} size={36} radius={6} />
+                    <div style={{ minWidth: 0, flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {it.title}
+                      </div>
+                      {it.subtitle && (
+                        <div style={{ fontSize: 11, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {it.subtitle}
+                        </div>
+                      )}
+                    </div>
+                    <Icons.Play size={12} style={{ opacity: 0.5 }} />
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-Object.assign(window, { Obsidian, SearchOverlay });
+Object.assign(window, { Obsidian, TopbarSearch });

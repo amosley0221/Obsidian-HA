@@ -48,18 +48,45 @@
   <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
   <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
 
-  <script src="src/data.js"></script>
-  <script src="src/album-color.js"></script>
-  <script src="src/ha-client.js"></script>
-  <script type="text/babel" src="src/icons.jsx"></script>
-  <script type="text/babel" src="src/state.jsx"></script>
-  <script type="text/babel" src="src/common.jsx"></script>
-
-  <script type="text/babel" src="src/obsidian.jsx"></script>
-  <script type="text/babel" src="src/obsidian-mobile.jsx"></script>
-
-  <script type="text/babel" src="src/ha-bridge.jsx"></script>
-  <script type="text/babel" src="src/setup.jsx"></script>
-  <script type="text/babel" src="src/app.jsx"></script>
+  <!--
+    Cache-buster: bump V on every release. All local scripts load with ?v=V
+    so browsers and PWAs pull fresh code without needing a manual hard-refresh.
+    Change this one line whenever you push an update.
+  -->
+  <script>
+    window.SONOS_V = '2';
+    (function () {
+      const V = window.SONOS_V;
+      const PLAIN = ['src/data.js', 'src/album-color.js', 'src/ha-client.js'];
+      const JSX = [
+        'src/icons.jsx', 'src/state.jsx', 'src/common.jsx',
+        'src/obsidian.jsx', 'src/obsidian-mobile.jsx',
+        'src/ha-bridge.jsx', 'src/setup.jsx', 'src/app.jsx',
+      ];
+      function loadPlain(src) {
+        return new Promise((resolve, reject) => {
+          const s = document.createElement('script');
+          s.src = src + '?v=' + V;
+          s.async = false;
+          s.onload = resolve;
+          s.onerror = reject;
+          document.head.appendChild(s);
+        });
+      }
+      async function boot() {
+        for (const src of PLAIN) await loadPlain(src);
+        for (const src of JSX) {
+          const s = document.createElement('script');
+          s.src = src + '?v=' + V;
+          s.type = 'text/babel';
+          document.body.appendChild(s);
+        }
+        // Babel processes type=text/babel script tags on DOMContentLoaded;
+        // for tags added after that, trigger transformation manually.
+        if (window.Babel && Babel.transformScriptTags) Babel.transformScriptTags();
+      }
+      boot();
+    })();
+  </script>
 </body>
 </html>

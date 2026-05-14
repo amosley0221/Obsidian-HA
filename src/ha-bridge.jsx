@@ -137,20 +137,35 @@
 
   // ── Music Assistant: discover config_entry_id, library, search ──────────
   async function discoverMassConfig(ha) {
-    try {
-      const entries = await ha.callWS({
-        type: 'config_entries/get',
-        domain: 'music_assistant',
-      });
-      const entry = (entries || []).find((e) => e.state === 'loaded') || entries?.[0];
-      return entry?.entry_id || null;
-    } catch (e) {
+    // MA's HA integration has used different domain names over time:
+    // 'music_assistant' (core / newer) and 'mass' (older HACS custom_component).
+    // Try domain-filtered queries first; fall back to a full list + filter.
+    const tryDomain = async (domain) => {
+      try {
+        const entries = await ha.callWS({ type: 'config_entries/get', domain });
+        const entry = (entries || []).find((e) => e.state === 'loaded') || entries?.[0];
+        if (entry?.entry_id) return { entryId: entry.entry_id, domain };
+      } catch (e) {}
       return null;
+    };
+    for (const domain of ['music_assistant', 'mass']) {
+      const r = await tryDomain(domain);
+      if (r) { console.log('[sonos-remote] MA config entry', r.entryId, 'domain', domain); return r; }
     }
+    try {
+      const all = await ha.callWS({ type: 'config_entries/get' });
+      const entry = (all || []).find((e) => e.domain === 'music_assistant' || e.domain === 'mass');
+      if (entry?.entry_id) {
+        console.log('[sonos-remote] MA config entry (via filter)', entry.entry_id, entry.domain);
+        return { entryId: entry.entry_id, domain: entry.domain };
+      }
+    } catch (e) {}
+    return null;
   }
 
   function massImageUrl(item) {
-    const img = item?.image || (item?.metadata && item.metadata.images?.[0]);
+    const img = item?.image || item?.images?.[0]
+            || (item?.metadata && item.metadata.images?.[0]);
     if (!img) return null;
     if (typeof img === 'string') return img;
     return img.path || img.url || img.remote_address || null;
@@ -164,7 +179,7 @@
       ? item.artists.map((a) => a.name).filter(Boolean).join(', ')
       : item.artist?.name || item.owner || '';
     return {
-      id: item.uri || item.item_id,
+      id: item.uri || item.item_id || item.id,
       title: item.name,
       artist: artists,
       subtitle: artists || item.album?.name || item.media_type || '',
@@ -178,73 +193,116 @@
     };
   }
 
-  // Try a list of WS command shapes — returns the first one that works.
+  // Pull a list out of whatever shape MA returned.
+  function extractList(result) {
+    if (Array.isArray(result)) return result;
+    if (Array.isArray(result?.items)) return result.items;
+    if (Array.isArray(result?.data)) return result.data;
+    if (Array.isArray(result?.results)) return result.results;
+    return null;
+  }
+
+  // Try every WS shape known across MA versions until one returns a list.
   async function massListLibrary(ha, configEntryId, mediaType) {
+    const plural = mediaType + 's';
+    const base = configEntryId ? { config_entry_id: configEntryId } : {};
     const variants = [
-      { type: `music_assistant/library/${mediaType}s`, config_entry_id: configEntryId, limit: 30, offset: 0, order_by: 'name' },
-      { type: `music_assistant/library/${mediaType}s`, config_entry_id: configEntryId, limit: 30 },
-      { type: `music_assistant/library/${mediaType}s`, limit: 30 },
-      { type: `music_assistant/get_library`, config_entry_id: configEntryId, media_type: mediaType, limit: 30 },
+      { type: 'music_assistant/library', ...base, media_type: mediaType, limit: 30, offset: 0 },
+      { type: 'music_assistant/get_library', ...base, media_type: mediaType, limit: 30 },
+      { type: 'music_assistant/library_items', ...base, media_type: mediaType, limit: 30 },
+      { type: `music_assistant/library/${plural}`, ...base, limit: 30 },
+      { type: `mass/library/${plural}`, ...base, limit: 30 },
+      { type: 'mass/library', ...base, media_type: mediaType, limit: 30 },
+      // No config_entry_id fallback
+      { type: 'music_assistant/library', media_type: mediaType, limit: 30 },
+      { type: `music_assistant/library/${plural}`, limit: 30 },
     ];
     for (const payload of variants) {
       try {
         const result = await ha.callWS(payload);
-        const list = Array.isArray(result) ? result : (result?.items || []);
-        if (Array.isArray(list)) return list;
-      } catch (e) { /* try next */ }
+        const list = extractList(result);
+        if (list) {
+          console.log('[sonos-remote] MA', payload.type, mediaType, '→', list.length, 'items');
+          return list;
+        }
+      } catch (e) {
+        // ignore — try next variant
+      }
     }
+    console.warn('[sonos-remote] No MA library command worked for', mediaType);
     return [];
   }
 
   async function massSearch(ha, configEntryId, query) {
     if (!query || !query.trim()) return { tracks: [], albums: [], artists: [], playlists: [] };
+    const base = configEntryId ? { config_entry_id: configEntryId } : {};
     const variants = [
-      {
-        type: 'music_assistant/search', config_entry_id: configEntryId,
-        search_query: query, media_types: ['track', 'album', 'artist', 'playlist'], limit: 8,
-      },
+      { type: 'music_assistant/search', ...base,
+        search_query: query, media_types: ['track', 'album', 'artist', 'playlist'], limit: 8 },
+      { type: 'music_assistant/search', ...base, search_query: query, limit: 8 },
+      { type: 'mass/search', ...base, search_query: query,
+        media_types: ['track', 'album', 'artist', 'playlist'], limit: 8 },
       { type: 'music_assistant/search', search_query: query, limit: 8 },
     ];
     for (const payload of variants) {
       try {
         const result = await ha.callWS(payload);
-        if (result) {
-          return {
-            tracks:    (result.tracks    || []).map(toShelfFromMass),
-            albums:    (result.albums    || []).map(toShelfFromMass),
-            artists:   (result.artists   || []).map(toShelfFromMass),
-            playlists: (result.playlists || []).map(toShelfFromMass),
-          };
+        if (!result) continue;
+        // Result might be { tracks, albums, ... } or { items: [...] } or a flat array.
+        let tracks = [], albums = [], artists = [], playlists = [];
+        if (Array.isArray(result.tracks)    || Array.isArray(result.albums)
+         || Array.isArray(result.artists)   || Array.isArray(result.playlists)) {
+          tracks    = (result.tracks    || []).map(toShelfFromMass);
+          albums    = (result.albums    || []).map(toShelfFromMass);
+          artists   = (result.artists   || []).map(toShelfFromMass);
+          playlists = (result.playlists || []).map(toShelfFromMass);
+        } else {
+          const list = extractList(result) || [];
+          for (const it of list) {
+            const shelf = toShelfFromMass(it);
+            switch ((it.media_type || '').toLowerCase()) {
+              case 'track':    tracks.push(shelf); break;
+              case 'album':    albums.push(shelf); break;
+              case 'artist':   artists.push(shelf); break;
+              case 'playlist': playlists.push(shelf); break;
+            }
+          }
         }
-      } catch (e) { /* try next */ }
+        console.log('[sonos-remote] MA search via', payload.type,
+          '→ tracks', tracks.length, 'albums', albums.length,
+          'artists', artists.length, 'playlists', playlists.length);
+        return { tracks, albums, artists, playlists };
+      } catch (e) {
+        // try next
+      }
     }
+    console.warn('[sonos-remote] All MA search variants failed for', query);
     return { tracks: [], albums: [], artists: [], playlists: [] };
   }
 
   async function refreshLibrary(ha) {
-    const configEntryId = await discoverMassConfig(ha);
-    if (!configEntryId) {
+    const cfg = await discoverMassConfig(ha);
+    if (!cfg) {
       console.warn('[sonos-remote] Music Assistant integration not found — library will stay empty');
-      DATA.playlists = []; DATA.albums = []; DATA.stations = []; DATA.recents = []; DATA.artists = []; DATA.tracks = [];
+      DATA.playlists = []; DATA.albums = []; DATA.stations = []; DATA.recents = []; DATA.artists = []; DATA.libraryTracks = [];
       SonosStore.update(() => {});
       return null;
     }
+    const { entryId } = cfg;
 
     const [playlists, albums, artists, tracks, radios] = await Promise.all([
-      massListLibrary(ha, configEntryId, 'playlist'),
-      massListLibrary(ha, configEntryId, 'album'),
-      massListLibrary(ha, configEntryId, 'artist'),
-      massListLibrary(ha, configEntryId, 'track'),
-      massListLibrary(ha, configEntryId, 'radio'),
+      massListLibrary(ha, entryId, 'playlist'),
+      massListLibrary(ha, entryId, 'album'),
+      massListLibrary(ha, entryId, 'artist'),
+      massListLibrary(ha, entryId, 'track'),
+      massListLibrary(ha, entryId, 'radio'),
     ]);
 
-    DATA.playlists = playlists.map(toShelfFromMass);
-    DATA.albums    = albums.map(toShelfFromMass);
-    DATA.artists   = artists.map(toShelfFromMass);
+    DATA.playlists     = playlists.map(toShelfFromMass);
+    DATA.albums        = albums.map(toShelfFromMass);
+    DATA.artists       = artists.map(toShelfFromMass);
     DATA.libraryTracks = tracks.map(toShelfFromMass);
-    DATA.stations  = radios.map(toShelfFromMass);
-    // "Recents" — MA has no canonical endpoint; reuse most recent library
-    // tracks / playlists as a stand-in.
+    DATA.stations      = radios.map(toShelfFromMass);
     DATA.recents = [
       ...DATA.libraryTracks.slice(0, 3),
       ...DATA.playlists.slice(0, 3),
@@ -252,12 +310,21 @@
 
     SonosStore.update(() => {});
 
-    // Expose search to the UI layer.
     window.MA = {
-      configEntryId,
-      search: (q) => massSearch(ha, configEntryId, q),
+      configEntryId: entryId,
+      search: (q) => massSearch(ha, entryId, q),
     };
-    return configEntryId;
+
+    // Diagnostics handle — open the console and type haDebug.testLibrary()
+    // to manually exercise the WS API if something looks wrong.
+    window.haDebug = {
+      client: ha,
+      massConfig: cfg,
+      listLibrary: (mediaType) => massListLibrary(ha, entryId, mediaType),
+      search: (q) => massSearch(ha, entryId, q),
+      raw: (payload) => ha.callWS(payload),
+    };
+    return entryId;
   }
 
   // ── Action overrides — route through HA services ────────────────────────
