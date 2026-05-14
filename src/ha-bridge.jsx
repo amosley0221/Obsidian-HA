@@ -6,6 +6,10 @@
 (function () {
   const { SonosStore, SonosActions, DATA, AlbumColor } = window;
 
+  // Stable handle to one entity we know works for browse_media calls —
+  // populated once rooms are discovered.
+  let BROWSE_ENTITY = null;
+
   // ── Entity discovery ────────────────────────────────────────────────────
   // Prefer Music Assistant-managed players if any exist (so MA play_media
   // works); fall back to native Sonos. Returns array of entity_id strings.
@@ -118,6 +122,7 @@
     });
 
     DATA.rooms = rooms;
+    if (rooms.length > 0) BROWSE_ENTITY = rooms[0].id;
     SonosStore.update((s) => {
       s.rooms = {};
       s.playhead = {};
@@ -199,140 +204,176 @@
     if (Array.isArray(result?.items)) return result.items;
     if (Array.isArray(result?.data)) return result.data;
     if (Array.isArray(result?.results)) return result.results;
+    if (Array.isArray(result?.children)) return result.children;
+    if (Array.isArray(result?.result)) return result.result;
     return null;
   }
 
-  // Try every WS shape known across MA versions until one returns a list.
-  async function massListLibrary(ha, configEntryId, mediaType) {
-    const plural = mediaType + 's';
-    const base = configEntryId ? { config_entry_id: configEntryId } : {};
-    const variants = [
-      { type: `music_assistant/library/${plural}`, ...base, limit: 30, offset: 0 },
-      { type: `music_assistant/library/${plural}`, ...base, limit: 30, offset: 0, favorite: true },
-      { type: `music_assistant/library/${plural}`, ...base },
-      { type: 'music_assistant/library', ...base, media_type: mediaType, limit: 30, offset: 0 },
-      { type: 'music_assistant/get_library', ...base, media_type: mediaType, limit: 30 },
-      { type: 'music_assistant/library_items', ...base, media_type: mediaType, limit: 30 },
-      { type: `mass/library/${plural}`, ...base, limit: 30 },
-      { type: 'mass/library', ...base, media_type: mediaType, limit: 30 },
-      // No config_entry_id fallback
-      { type: `music_assistant/library/${plural}`, limit: 30 },
-      { type: 'music_assistant/library', media_type: mediaType, limit: 30 },
-    ];
-    for (const payload of variants) {
-      try {
-        const result = await ha.callWS(payload);
-        const list = extractList(result);
-        if (list) {
-          console.log('[sonos-remote] ✓ MA', payload.type, mediaType, '→', list.length, 'items');
-          if (list[0]) console.log('[sonos-remote]   sample:', list[0]);
-          return list;
-        }
-        console.log('[sonos-remote]   shape', payload.type, 'returned non-list:', result);
-      } catch (e) {
-        console.log('[sonos-remote]   shape', payload.type, '✗', e?.message || e);
-      }
+  // ─ media_player/browse_media wrappers ─────────────────────────────────
+  async function browse(ha, entityId, id) {
+    const payload = {
+      type: 'media_player/browse_media',
+      entity_id: entityId,
+      ...(id ? { media_content_id: id } : {}),
+    };
+    try {
+      return await ha.callWS(payload);
+    } catch (e) {
+      console.log('[sonos-remote] browse_media error', id || '<root>', e?.message || e);
+      return null;
     }
-    console.warn('[sonos-remote] No MA library command worked for', mediaType);
-    return [];
   }
 
-  async function massSearch(ha, configEntryId, query) {
-    if (!query || !query.trim()) return { tracks: [], albums: [], artists: [], playlists: [] };
-    const base = configEntryId ? { config_entry_id: configEntryId } : {};
+  function shelfFromBrowseNode(node) {
+    const url = node.thumbnail || null;
+    const fallback = AlbumColor.fallbackArt(node.title || node.media_content_id || '');
+    const art = url ? { ...fallback, artUrl: url } : fallback;
+    return {
+      id: node.media_content_id,
+      title: node.title,
+      artist: '',
+      subtitle: (node.media_class || node.media_content_type || '').toString(),
+      art,
+      _mass: {
+        uri: node.media_content_id,
+        media_content_id: node.media_content_id,
+        media_content_type: node.media_content_type,
+      },
+    };
+  }
+
+  // Walk an MA browse tree and bucket items by media_class. Caps work by
+  // depth and per-bucket size so a huge library doesn't pin the WS.
+  async function refreshLibraryViaBrowse(ha, entityId) {
+    const shelves = { playlists: [], albums: [], artists: [], tracks: [], radios: [] };
+    const root = await browse(ha, entityId, undefined);
+    if (!root) {
+      console.warn('[sonos-remote] browse_media returned nothing at root');
+      return shelves;
+    }
+    console.log('[sonos-remote] Browse root has', (root.children || []).length, 'children');
+
+    const visited = new Set();
+    async function walk(node, depth) {
+      if (depth > 3) return;
+      if (!node || !node.media_content_id || visited.has(node.media_content_id)) {
+        // top-level root has no id; that's fine — caller already supplied children
+      } else {
+        visited.add(node.media_content_id);
+      }
+      const data = node.children ? node : (node.media_content_id ? await browse(ha, entityId, node.media_content_id) : null);
+      const children = data?.children || [];
+      for (const child of children) {
+        const cls = (child.media_class || '').toLowerCase();
+        const type = (child.media_content_type || '').toLowerCase();
+        // Classify by class/type
+        if (cls === 'playlist' || type === 'playlist') {
+          if (shelves.playlists.length < 40) shelves.playlists.push(shelfFromBrowseNode(child));
+        } else if (cls === 'album' || type === 'album') {
+          if (shelves.albums.length < 40) shelves.albums.push(shelfFromBrowseNode(child));
+        } else if (cls === 'artist' || type === 'artist') {
+          if (shelves.artists.length < 40) shelves.artists.push(shelfFromBrowseNode(child));
+        } else if (cls === 'track' || cls === 'music' || type === 'track' || type === 'music') {
+          if (shelves.tracks.length < 40) shelves.tracks.push(shelfFromBrowseNode(child));
+        } else if (cls === 'channel' || type === 'radio' || cls === 'radio') {
+          if (shelves.radios.length < 40) shelves.radios.push(shelfFromBrowseNode(child));
+        } else if (child.can_expand && depth < 3) {
+          // Directory — drill in
+          await walk(child, depth + 1);
+        }
+        // Stop walking if every bucket is full
+        if (Object.values(shelves).every((b) => b.length >= 40)) return;
+      }
+    }
+    await walk(root, 0);
+    console.log('[sonos-remote] Browse complete:',
+      'playlists', shelves.playlists.length,
+      'albums',    shelves.albums.length,
+      'artists',   shelves.artists.length,
+      'tracks',    shelves.tracks.length,
+      'radios',    shelves.radios.length);
+    return shelves;
+  }
+
+  // ─ media_player/search_media — standard HA WS command MA plugs into ────
+  async function searchViaMediaPlayer(ha, entityId, query) {
+    if (!entityId || !query?.trim()) {
+      return { tracks: [], albums: [], artists: [], playlists: [] };
+    }
     const variants = [
-      { type: 'music_assistant/search', ...base,
-        search_query: query, media_types: ['track', 'album', 'artist', 'playlist'], limit: 8 },
-      { type: 'music_assistant/search', ...base, search_query: query, limit: 8 },
-      { type: 'music_assistant/search', ...base, search: query, limit: 8 },
-      { type: 'music_assistant/search', ...base, query: query, limit: 8 },
-      { type: 'mass/search', ...base, search_query: query,
-        media_types: ['track', 'album', 'artist', 'playlist'], limit: 8 },
-      { type: 'music_assistant/search', search_query: query, limit: 8 },
+      { type: 'media_player/search_media', entity_id: entityId, search_query: query },
+      { type: 'media_player/search_media', entity_id: entityId, search_query: query,
+        media_filter_classes: ['track', 'album', 'artist', 'playlist'] },
     ];
     for (const payload of variants) {
       try {
         const result = await ha.callWS(payload);
-        if (!result) {
-          console.log('[sonos-remote]   search', payload.type, 'returned null');
+        if (!result) continue;
+        const items = extractList(result) || extractList(result.result) || [];
+        if (!items.length) {
+          console.log('[sonos-remote] search_media returned 0 results for', query);
           continue;
         }
-        let tracks = [], albums = [], artists = [], playlists = [];
-        if (Array.isArray(result.tracks)    || Array.isArray(result.albums)
-         || Array.isArray(result.artists)   || Array.isArray(result.playlists)) {
-          tracks    = (result.tracks    || []).map(toShelfFromMass);
-          albums    = (result.albums    || []).map(toShelfFromMass);
-          artists   = (result.artists   || []).map(toShelfFromMass);
-          playlists = (result.playlists || []).map(toShelfFromMass);
-        } else {
-          const list = extractList(result) || [];
-          for (const it of list) {
-            const shelf = toShelfFromMass(it);
-            switch ((it.media_type || '').toLowerCase()) {
-              case 'track':    tracks.push(shelf); break;
-              case 'album':    albums.push(shelf); break;
-              case 'artist':   artists.push(shelf); break;
-              case 'playlist': playlists.push(shelf); break;
-            }
-          }
+        const buckets = { tracks: [], albums: [], artists: [], playlists: [] };
+        for (const it of items) {
+          const cls = (it.media_class || '').toLowerCase();
+          const type = (it.media_content_type || '').toLowerCase();
+          const shelf = shelfFromBrowseNode(it);
+          if (cls === 'track' || cls === 'music' || type === 'track' || type === 'music') buckets.tracks.push(shelf);
+          else if (cls === 'album' || type === 'album') buckets.albums.push(shelf);
+          else if (cls === 'artist' || type === 'artist') buckets.artists.push(shelf);
+          else if (cls === 'playlist' || type === 'playlist') buckets.playlists.push(shelf);
         }
-        console.log('[sonos-remote] ✓ MA search via', payload.type,
-          '→ tracks', tracks.length, 'albums', albums.length,
-          'artists', artists.length, 'playlists', playlists.length);
-        return { tracks, albums, artists, playlists };
+        console.log('[sonos-remote] ✓ search_media',
+          '→ tracks', buckets.tracks.length, 'albums', buckets.albums.length,
+          'artists', buckets.artists.length, 'playlists', buckets.playlists.length);
+        return buckets;
       } catch (e) {
-        console.log('[sonos-remote]   search', payload.type, '✗', e?.message || e);
+        console.log('[sonos-remote] search_media shape', payload.type, '✗', e?.message || e);
       }
     }
-    console.warn('[sonos-remote] All MA search variants failed for', query);
+    console.warn('[sonos-remote] All search_media variants failed for', query);
     return { tracks: [], albums: [], artists: [], playlists: [] };
   }
 
   async function refreshLibrary(ha) {
-    const cfg = await discoverMassConfig(ha);
-    if (!cfg) {
-      console.warn('[sonos-remote] Music Assistant integration not found — library will stay empty');
-      DATA.playlists = []; DATA.albums = []; DATA.stations = []; DATA.recents = []; DATA.artists = []; DATA.libraryTracks = [];
-      SonosStore.update(() => {});
+    const entityId = BROWSE_ENTITY;
+    if (!entityId) {
+      console.warn('[sonos-remote] No browse entity available — skipping library load');
       return null;
     }
-    const { entryId } = cfg;
 
-    const [playlists, albums, artists, tracks, radios] = await Promise.all([
-      massListLibrary(ha, entryId, 'playlist'),
-      massListLibrary(ha, entryId, 'album'),
-      massListLibrary(ha, entryId, 'artist'),
-      massListLibrary(ha, entryId, 'track'),
-      massListLibrary(ha, entryId, 'radio'),
-    ]);
+    const shelves = await refreshLibraryViaBrowse(ha, entityId);
 
-    DATA.playlists     = playlists.map(toShelfFromMass);
-    DATA.albums        = albums.map(toShelfFromMass);
-    DATA.artists       = artists.map(toShelfFromMass);
-    DATA.libraryTracks = tracks.map(toShelfFromMass);
-    DATA.stations      = radios.map(toShelfFromMass);
+    DATA.playlists     = shelves.playlists;
+    DATA.albums        = shelves.albums;
+    DATA.artists       = shelves.artists;
+    DATA.libraryTracks = shelves.tracks;
+    DATA.stations      = shelves.radios;
     DATA.recents = [
       ...DATA.libraryTracks.slice(0, 3),
       ...DATA.playlists.slice(0, 3),
-    ].map((it) => ({ ...it, subtitle: it.artist || it.subtitle }));
+    ];
 
     SonosStore.update(() => {});
 
     window.MA = {
-      configEntryId: entryId,
-      search: (q) => massSearch(ha, entryId, q),
+      browseEntity: entityId,
+      search: (q) => searchViaMediaPlayer(ha, entityId, q),
     };
 
-    // Diagnostics handle — open the console and type haDebug.testLibrary()
-    // to manually exercise the WS API if something looks wrong.
     window.haDebug = {
       client: ha,
-      massConfig: cfg,
-      listLibrary: (mediaType) => massListLibrary(ha, entryId, mediaType),
-      search: (q) => massSearch(ha, entryId, q),
+      browseEntity: entityId,
+      browseRoot: () => ha.callWS({ type: 'media_player/browse_media', entity_id: entityId }),
+      browse: (mediaContentId) => ha.callWS({
+        type: 'media_player/browse_media', entity_id: entityId, media_content_id: mediaContentId,
+      }),
+      search: (q) => searchViaMediaPlayer(ha, entityId, q),
+      rawSearch: (q) => ha.callWS({ type: 'media_player/search_media', entity_id: entityId, search_query: q }),
       raw: (payload) => ha.callWS(payload),
     };
-    return entryId;
+    return entityId;
   }
 
   // ── Action overrides — route through HA services ────────────────────────
