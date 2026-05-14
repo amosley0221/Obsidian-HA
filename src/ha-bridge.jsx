@@ -18,16 +18,26 @@
     const mediaPlayers = entityRegistry.filter(
       (e) => e.entity_id.startsWith('media_player.') && !e.disabled_by && !e.hidden_by
     );
-    const massEntities = mediaPlayers.filter((e) => e.platform === 'mass');
+    // The HA-core MA integration uses platform 'music_assistant'; the older
+    // HACS custom_component used 'mass'. Match either.
+    const massEntities = mediaPlayers.filter(
+      (e) => e.platform === 'music_assistant' || e.platform === 'mass'
+    );
     const sonosEntities = mediaPlayers.filter((e) => e.platform === 'sonos');
-    const chosen = (massEntities.length > 0 ? massEntities : sonosEntities)
+    const usingMass = massEntities.length > 0;
+    const chosen = (usingMass ? massEntities : sonosEntities)
       .filter((e) => stateById.has(e.entity_id));
     chosen.sort((a, b) => {
       const an = stateById.get(a.entity_id).attributes.friendly_name || a.entity_id;
       const bn = stateById.get(b.entity_id).attributes.friendly_name || b.entity_id;
       return an.localeCompare(bn);
     });
-    return { entities: chosen, usingMass: massEntities.length > 0 };
+    console.log('[sonos-remote] Discovery:', chosen.length, 'rooms via',
+      usingMass ? 'Music Assistant' : 'native Sonos');
+    if (chosen.length > 0) {
+      console.log('[sonos-remote] Entities:', chosen.map((e) => e.entity_id).join(', '));
+    }
+    return { entities: chosen, usingMass };
   }
 
   function roomIconFor(name) {
