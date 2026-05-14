@@ -301,18 +301,19 @@
       for (const child of children) {
         const cls = (child.media_class || '').toLowerCase();
         const type = (child.media_content_type || '').toLowerCase();
-        // Classify by media_class / media_content_type. Note: MA often uses
-        // media_class='music' for tracks and 'directory' for navigable nodes.
-        if (cls === 'playlist' || type === 'playlist') {
-          if (shelves.playlists.length < PER_BUCKET) shelves.playlists.push(shelfFromBrowseNode(child));
-        } else if (cls === 'album' || type === 'album') {
-          if (shelves.albums.length < PER_BUCKET) shelves.albums.push(shelfFromBrowseNode(child));
-        } else if (cls === 'artist' || type === 'artist') {
+        // Order matters: MA tags every audio item with media_class='music',
+        // so we have to consult media_content_type FIRST to distinguish
+        // artists/albums/playlists from raw tracks.
+        if (type === 'artist' || cls === 'artist') {
           if (shelves.artists.length < PER_BUCKET) shelves.artists.push(shelfFromBrowseNode(child));
-        } else if (cls === 'track' || cls === 'music' || type === 'track' || type === 'music') {
-          if (shelves.tracks.length < PER_BUCKET) shelves.tracks.push(shelfFromBrowseNode(child));
+        } else if (type === 'album' || cls === 'album') {
+          if (shelves.albums.length < PER_BUCKET) shelves.albums.push(shelfFromBrowseNode(child));
+        } else if (type === 'playlist' || cls === 'playlist') {
+          if (shelves.playlists.length < PER_BUCKET) shelves.playlists.push(shelfFromBrowseNode(child));
         } else if (type === 'radio' || cls === 'radio' || cls === 'channel') {
           if (shelves.radios.length < PER_BUCKET) shelves.radios.push(shelfFromBrowseNode(child));
+        } else if (type === 'track' || cls === 'track' || cls === 'music' || type === 'music') {
+          if (shelves.tracks.length < PER_BUCKET) shelves.tracks.push(shelfFromBrowseNode(child));
         } else if (child.can_expand && depth < MAX_DEPTH) {
           // Directory / category → drill in
           await walk(child, depth + 1);
@@ -354,10 +355,11 @@
           const cls = (it.media_class || '').toLowerCase();
           const type = (it.media_content_type || '').toLowerCase();
           const shelf = shelfFromBrowseNode(it);
-          if (cls === 'track' || cls === 'music' || type === 'track' || type === 'music') buckets.tracks.push(shelf);
-          else if (cls === 'album' || type === 'album') buckets.albums.push(shelf);
-          else if (cls === 'artist' || type === 'artist') buckets.artists.push(shelf);
-          else if (cls === 'playlist' || type === 'playlist') buckets.playlists.push(shelf);
+          // media_content_type FIRST — see comment in refreshLibraryViaBrowse.
+          if (type === 'artist' || cls === 'artist') buckets.artists.push(shelf);
+          else if (type === 'album' || cls === 'album') buckets.albums.push(shelf);
+          else if (type === 'playlist' || cls === 'playlist') buckets.playlists.push(shelf);
+          else if (type === 'track' || cls === 'track' || cls === 'music' || type === 'music') buckets.tracks.push(shelf);
         }
         console.log('[sonos-remote] ✓ search_media',
           '→ tracks', buckets.tracks.length, 'albums', buckets.albums.length,

@@ -421,15 +421,17 @@ function OMRooms({ tk }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                   <Icons.Group size={11} /> Grouped · {g.rooms.length}
                 </span>
-                <button onClick={() => g.rooms.forEach((r) => SonosActions.ungroup(r.id))}
-                        style={{ border: 0, background: 'transparent', color: tk.text2,
-                                 fontSize: 11, fontWeight: 500, cursor: 'pointer', letterSpacing: 0,
-                                 textTransform: 'none' }}>
-                  Ungroup
+                <button
+                  onClick={() => g.rooms.slice(1).forEach((r) => SonosActions.ungroup(r.id))}
+                  title="Detach every follower; host keeps playing"
+                  style={{ border: 0, background: 'transparent', color: tk.text2,
+                           fontSize: 11, fontWeight: 500, cursor: 'pointer', letterSpacing: 0,
+                           textTransform: 'none' }}>
+                  Ungroup all
                 </button>
               </div>
             )}
-            {g.rooms.map((r) => (
+            {g.rooms.map((r, idx) => (
               <OMRoomCard
                 key={r.id}
                 ref={(el) => (cardRefs.current[r.id] = el)}
@@ -439,6 +441,9 @@ function OMRooms({ tk }) {
                 active={s.activeRoomId === r.id}
                 lifted={drag?.id === r.id}
                 hovered={hoverId === r.id}
+                inGroup={!!g.groupId}
+                isGroupMaster={!!g.groupId && idx === 0}
+                onLeaveGroup={() => SonosActions.ungroup(r.id)}
                 onTap={() => SonosActions.setActiveRoom(r.id)}
                 onPointerDown={(e) => onPointerDown(e, r.id)}
               />
@@ -489,7 +494,7 @@ function OMRooms({ tk }) {
 }
 
 const OMRoomCard = React.forwardRef(function OMRoomCard(
-  { room, state, tk, active, lifted, hovered, onTap, onPointerDown }, ref) {
+  { room, state, tk, active, lifted, hovered, inGroup, isGroupMaster, onLeaveGroup, onTap, onPointerDown }, ref) {
   const track = state.trackId ? DATA.tracks.find((t) => t.id === state.trackId) : null;
   return (
     <div ref={ref}
@@ -533,12 +538,32 @@ const OMRoomCard = React.forwardRef(function OMRoomCard(
                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
               {room.name}
             </span>
+            {isGroupMaster && (
+              <span style={{
+                fontSize: 9, fontWeight: 600, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: 'var(--om-accent)', flexShrink: 0,
+              }}>Host</span>
+            )}
             {state.playing && <AnimatedWaveform playing color="var(--om-accent)" height={10} width={12} bars={3} />}
           </div>
           <div style={{ fontSize: 11.5, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
             {track ? `${track.title} · ${track.artist}` : `${room.product} · idle`}
           </div>
         </div>
+        {inGroup && onLeaveGroup && (
+          <button data-no-drag
+            onClick={(e) => { e.stopPropagation(); onLeaveGroup(); }}
+            aria-label="Leave group"
+            title="Leave group"
+            style={{
+              width: 28, height: 28, borderRadius: 999,
+              border: `0.5px solid ${tk.border}`, background: 'transparent',
+              color: tk.text2, cursor: 'pointer',
+              display: 'grid', placeItems: 'center', flexShrink: 0,
+            }}>
+            <Icons.Close size={12} />
+          </button>
+        )}
         <button data-no-drag onClick={(e) => { e.stopPropagation(); SonosActions.togglePlayRoom(room.id); }} style={{
           width: 36, height: 36, borderRadius: 999, border: 0,
           background: state.playing ? tk.invertBg : tk.surfaceStrong,

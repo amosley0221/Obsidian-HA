@@ -246,19 +246,25 @@ function ObsidianRooms({ tk }) {
                 <span style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
                   <Icons.Group size={11} /> Grouped · {g.rooms.length} rooms
                 </span>
-                <button onClick={() => g.rooms.forEach((r) => SonosActions.ungroup(r.id))} style={{
-                  border: 0, background: 'transparent', color: tk.text3,
-                  fontSize: 10.5, fontWeight: 500, cursor: 'pointer', letterSpacing: 0, textTransform: 'none',
-                }}>Ungroup</button>
+                <button
+                  onClick={() => g.rooms.slice(1).forEach((r) => SonosActions.ungroup(r.id))}
+                  title="Detach every follower; host keeps playing"
+                  style={{
+                    border: 0, background: 'transparent', color: tk.text3,
+                    fontSize: 10.5, fontWeight: 500, cursor: 'pointer', letterSpacing: 0, textTransform: 'none',
+                  }}>Ungroup all</button>
               </div>
             )}
-            {g.rooms.map((r) => (
+            {g.rooms.map((r, idx) => (
               <RoomCard
                 key={r.id} tk={tk}
                 room={r}
                 state={s.rooms[r.id]}
                 active={s.activeRoomId === r.id}
                 hovered={hoverRoom === r.id && dragRoom && dragRoom !== r.id}
+                inGroup={!!g.groupId}
+                isGroupMaster={!!g.groupId && idx === 0}
+                onLeaveGroup={() => SonosActions.ungroup(r.id)}
                 onClick={() => SonosActions.setActiveRoom(r.id)}
                 onPlayToggle={() => SonosActions.togglePlayRoom(r.id)}
                 onVolume={(v) => SonosActions.setVolume(r.id, v)}
@@ -279,7 +285,7 @@ function ObsidianRooms({ tk }) {
   );
 }
 
-function RoomCard({ room, state, active, hovered, tk, onClick, onPlayToggle, onVolume, onDragStart, onDragEnd, onDragOver }) {
+function RoomCard({ room, state, active, hovered, inGroup, isGroupMaster, onLeaveGroup, tk, onClick, onPlayToggle, onVolume, onDragStart, onDragEnd, onDragOver }) {
   const track = state.trackId ? DATA.tracks.find((t) => t.id === state.trackId) : null;
   return (
     <div
@@ -310,12 +316,32 @@ function RoomCard({ room, state, active, hovered, tk, onClick, onPlayToggle, onV
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, minWidth: 0 }}>
             <span style={{ fontSize: 13.5, fontWeight: 540, letterSpacing: '-0.015em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0, flex: '0 1 auto' }}>{room.name}</span>
+            {isGroupMaster && (
+              <span style={{
+                flexShrink: 0, fontSize: 9, fontWeight: 600, letterSpacing: '0.08em',
+                textTransform: 'uppercase', color: 'var(--obs-accent)',
+              }}>Host</span>
+            )}
             {state.playing && <span style={{ flexShrink: 0 }}><AnimatedWaveform playing color="var(--obs-accent)" height={10} width={12} bars={3} /></span>}
           </div>
           <div style={{ fontSize: 11, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: 1 }}>
             {track ? `${track.title} · ${track.artist}` : `${room.product} · idle`}
           </div>
         </div>
+        {inGroup && onLeaveGroup && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onLeaveGroup(); }}
+            aria-label="Leave group"
+            title="Leave group"
+            style={{
+              width: 24, height: 24, borderRadius: 999,
+              border: `0.5px solid ${tk.border}`, background: 'transparent',
+              color: tk.text2, cursor: 'pointer',
+              display: 'grid', placeItems: 'center', flexShrink: 0,
+            }}>
+            <Icons.Close size={11} />
+          </button>
+        )}
         <button onClick={(e) => { e.stopPropagation(); onPlayToggle(); }} style={{
           width: 30, height: 30, borderRadius: 999,
           border: 0, background: state.playing ? tk.invertBg : tk.surfaceStrong,
@@ -704,24 +730,53 @@ function TopbarSearch({ tk }) {
     return () => document.removeEventListener('mousedown', onDocDown);
   }, [focused]);
 
+  // Side-by-side drill stack — clicking an artist opens a second panel to
+  // the right showing their albums + tracks; clicking an album in that
+  // panel opens a third panel further right with the tracklist.
+  const [drillStack, setDrillStack] = useState([]); // [{ item, children, loading }]
+
+  const drillInto = async (item) => {
+    setDrillStack((s) => [...s, { item, children: [], loading: true }]);
+    try {
+      const id = item._mass?.media_content_id || item.id;
+      const children = (await window.MA?.browse(id)) || [];
+      setDrillStack((s) => {
+        const next = [...s];
+        next[next.length - 1] = { item, children, loading: false };
+        return next;
+      });
+    } catch (e) {
+      setDrillStack((s) => s.slice(0, -1));
+    }
+  };
+
   const onPick = (item) => {
     const type = (item._mass?.media_content_type || '').toLowerCase();
     const drill = type === 'artist' || type === 'album' || type === 'playlist';
     if (drill) {
-      window.dispatchEvent(new CustomEvent('sonos-remote:drill', { detail: item }));
-    } else {
-      window.massPlay?.(item);
+      drillInto(item);
+      return;
     }
+    window.massPlay?.(item);
     setQ('');
     setFocused(false);
+    setDrillStack([]);
     inputRef.current?.blur();
   };
 
+  const playFromDrill = (panel) => {
+    if (!panel?.item) return;
+    SonosActions.playTrack(panel.item.id);
+  };
+
+  // When q changes, reset drill stack so old drills don't linger.
+  useEffect(() => { if (!q) setDrillStack([]); }, [q]);
+
   const sections = [
-    { label: 'Tracks',    items: results.tracks },
-    { label: 'Albums',    items: results.albums },
     { label: 'Artists',   items: results.artists },
+    { label: 'Albums',    items: results.albums },
     { label: 'Playlists', items: results.playlists },
+    { label: 'Tracks',    items: results.tracks },
   ].filter((s) => s.items.length > 0);
 
   const showDropdown = focused && q.trim().length > 0;
@@ -766,56 +821,162 @@ function TopbarSearch({ tk }) {
       {showDropdown && (
         <div style={{
           position: 'absolute', top: 'calc(100% + 8px)', left: 0,
-          width: 'min(560px, calc(100vw - 32px))',
-          maxHeight: 'calc(100vh - 96px)',
-          background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
-          backdropFilter: 'blur(30px) saturate(180%)',
-          WebkitBackdropFilter: 'blur(30px) saturate(180%)',
-          border: `0.5px solid ${tk.border}`,
-          borderRadius: 16, color: tk.text,
-          boxShadow: '0 24px 60px rgba(0,0,0,.4)',
-          overflow: 'hidden', display: 'flex', flexDirection: 'column',
+          display: 'flex', alignItems: 'flex-start', gap: 8,
           zIndex: 50,
         }}>
-          <div style={{ overflowY: 'auto', padding: '8px 8px 12px', flex: 1 }}>
-            {sections.length === 0 && !loading && (
-              <div style={{ padding: 20, textAlign: 'center', color: tk.text3, fontSize: 13 }}>
-                No results.
-              </div>
-            )}
-            {sections.map((sec) => (
-              <div key={sec.label} style={{ marginTop: 4 }}>
-                <div style={{
-                  fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em',
-                  textTransform: 'uppercase', color: 'var(--obs-accent)',
-                  padding: '8px 12px 4px',
-                }}>{sec.label}</div>
-                {sec.items.map((it) => (
-                  <button key={it.id} onClick={() => play(it)} style={{
-                    display: 'flex', alignItems: 'center', gap: 10,
-                    width: '100%', padding: '6px 10px', border: 0,
-                    background: 'transparent', color: tk.text, cursor: 'pointer',
-                    borderRadius: 10, textAlign: 'left',
-                  }}>
-                    <AlbumArt art={it.art} title={it.title} size={36} radius={6} />
-                    <div style={{ minWidth: 0, flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                        {it.title}
-                      </div>
-                      {it.subtitle && (
-                        <div style={{ fontSize: 11, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {it.subtitle}
+          {/* Search results column */}
+          <div style={{
+            width: 'min(380px, calc(100vw - 32px))',
+            maxHeight: 'calc(100vh - 96px)',
+            background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
+            backdropFilter: 'blur(30px) saturate(180%)',
+            WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+            border: `0.5px solid ${tk.border}`,
+            borderRadius: 16, color: tk.text,
+            boxShadow: '0 24px 60px rgba(0,0,0,.4)',
+            overflow: 'hidden', display: 'flex', flexDirection: 'column',
+            flexShrink: 0,
+          }}>
+            <div style={{ overflowY: 'auto', padding: '8px 8px 12px', flex: 1 }}>
+              {sections.length === 0 && !loading && (
+                <div style={{ padding: 20, textAlign: 'center', color: tk.text3, fontSize: 13 }}>
+                  No results.
+                </div>
+              )}
+              {sections.map((sec) => (
+                <div key={sec.label} style={{ marginTop: 4 }}>
+                  <div style={{
+                    fontSize: 10.5, fontWeight: 600, letterSpacing: '0.14em',
+                    textTransform: 'uppercase', color: 'var(--obs-accent)',
+                    padding: '8px 12px 4px',
+                  }}>{sec.label}</div>
+                  {sec.items.map((it) => {
+                    const itemType = (it._mass?.media_content_type || '').toLowerCase();
+                    const drillable = itemType === 'artist' || itemType === 'album' || itemType === 'playlist';
+                    const active = drillable && drillStack[0]?.item?.id === it.id;
+                    return (
+                      <button key={it.id} onClick={() => onPick(it)} style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        width: '100%', padding: '6px 10px', border: 0,
+                        background: active ? tk.surfaceStrong : 'transparent',
+                        color: tk.text, cursor: 'pointer',
+                        borderRadius: 10, textAlign: 'left',
+                      }}>
+                        <AlbumArt art={it.art} title={it.title} size={36} radius={6} />
+                        <div style={{ minWidth: 0, flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {it.title}
+                          </div>
+                          {it.subtitle && (
+                            <div style={{ fontSize: 11, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {it.subtitle}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                    <Icons.Play size={12} style={{ opacity: 0.5 }} />
-                  </button>
-                ))}
-              </div>
-            ))}
+                        {drillable
+                          ? <span style={{ opacity: 0.5, fontSize: 14 }}>›</span>
+                          : <Icons.Play size={12} style={{ opacity: 0.5 }} />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
           </div>
+
+          {/* Drill panels — one per level (artist → album → tracklist) */}
+          {drillStack.map((panel, idx) => (
+            <DrillPanel
+              key={idx + ':' + (panel.item.id || idx)}
+              tk={tk}
+              panel={panel}
+              onItemPick={onPick}
+              onPlay={() => playFromDrill(panel)}
+              onBack={() => setDrillStack((s) => s.slice(0, idx))}
+            />
+          ))}
         </div>
       )}
+    </div>
+  );
+}
+
+function DrillPanel({ tk, panel, onItemPick, onPlay, onBack }) {
+  return (
+    <div style={{
+      width: 'min(360px, calc(100vw - 32px))',
+      maxHeight: 'calc(100vh - 96px)',
+      background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
+      backdropFilter: 'blur(30px) saturate(180%)',
+      WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+      border: `0.5px solid ${tk.border}`,
+      borderRadius: 16, color: tk.text,
+      boxShadow: '0 24px 60px rgba(0,0,0,.4)',
+      overflow: 'hidden', display: 'flex', flexDirection: 'column',
+      flexShrink: 0,
+    }}>
+      {/* Header */}
+      <div style={{
+        padding: '12px 14px', borderBottom: `0.5px solid ${tk.border}`,
+        display: 'flex', alignItems: 'center', gap: 10,
+      }}>
+        <AlbumArt art={panel.item.art} title={panel.item.title} size={40} radius={6} />
+        <div style={{ minWidth: 0, flex: 1 }}>
+          <div style={{ fontSize: 10, fontWeight: 600, letterSpacing: '0.14em',
+                        textTransform: 'uppercase', color: 'var(--obs-accent)' }}>
+            {(panel.item._mass?.media_content_type || '').toString() || 'Browse'}
+          </div>
+          <div style={{ fontSize: 14, fontWeight: 600, letterSpacing: '-0.01em',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {panel.item.title}
+          </div>
+        </div>
+        <button onClick={onPlay} aria-label="Play"
+          style={{
+            width: 32, height: 32, borderRadius: 999, border: 0,
+            background: 'var(--obs-accent)', color: tk.isDark ? '#0a0a0a' : '#fff',
+            cursor: 'pointer', display: 'grid', placeItems: 'center',
+          }}>
+          <Icons.Play size={14} />
+        </button>
+      </div>
+
+      {/* Items */}
+      <div style={{ overflowY: 'auto', padding: '6px 6px 12px', flex: 1 }}>
+        {panel.loading && (
+          <div style={{ padding: 20, textAlign: 'center', color: tk.text3, fontSize: 12 }}>Loading…</div>
+        )}
+        {!panel.loading && panel.children.length === 0 && (
+          <div style={{ padding: 20, textAlign: 'center', color: tk.text3, fontSize: 12 }}>Empty.</div>
+        )}
+        {panel.children.map((it) => {
+          const itemType = (it._mass?.media_content_type || '').toLowerCase();
+          const drillable = itemType === 'artist' || itemType === 'album' || itemType === 'playlist';
+          return (
+            <button key={it.id} onClick={() => onItemPick(it)} style={{
+              display: 'flex', alignItems: 'center', gap: 10,
+              width: '100%', padding: '6px 10px', border: 0,
+              background: 'transparent', color: tk.text, cursor: 'pointer',
+              borderRadius: 10, textAlign: 'left',
+            }}>
+              <AlbumArt art={it.art} title={it.title} size={34} radius={6} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 540, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {it.title}
+                </div>
+                {it.subtitle && (
+                  <div style={{ fontSize: 11, color: tk.text3, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {it.subtitle}
+                  </div>
+                )}
+              </div>
+              {drillable
+                ? <span style={{ opacity: 0.5, fontSize: 14 }}>›</span>
+                : <Icons.Play size={12} style={{ opacity: 0.5 }} />}
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
