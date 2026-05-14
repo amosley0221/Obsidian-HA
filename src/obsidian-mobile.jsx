@@ -630,10 +630,11 @@ function OMLibrary({ tk }) {
 
   const drillInto = async (item) => {
     const id = item._mass?.media_content_id || item.id;
+    const mediaType = item._mass?.media_content_type;
     if (!id || !window.MA?.browse) return;
     setDrillLoading(true);
     try {
-      const children = await window.MA.browse(id);
+      const children = await window.MA.browse(id, mediaType);
       setDrillStack((stk) => [...stk, { item, children }]);
     } finally {
       setDrillLoading(false);

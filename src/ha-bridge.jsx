@@ -259,11 +259,13 @@
   }
 
   // ─ media_player/browse_media wrappers ─────────────────────────────────
-  async function browse(ha, entityId, id) {
+  // HA's WS schema requires media_content_id AND media_content_type to be
+  // passed TOGETHER. Pass neither at root (no id), pass both on descent.
+  async function browse(ha, entityId, id, mediaType) {
     const payload = {
       type: 'media_player/browse_media',
       entity_id: entityId,
-      ...(id ? { media_content_id: id } : {}),
+      ...(id ? { media_content_id: id, media_content_type: mediaType } : {}),
     };
     try {
       return await ha.callWS(payload);
@@ -336,7 +338,9 @@
       }
       const data = node.children
         ? node
-        : (node.media_content_id ? await browse(ha, entityId, node.media_content_id) : null);
+        : (node.media_content_id
+            ? await browse(ha, entityId, node.media_content_id, node.media_content_type)
+            : null);
       const children = data?.children || [];
       for (const child of children) {
         const cls = (child.media_class || '').toLowerCase();
@@ -446,8 +450,8 @@
     window.MA = {
       browseEntity: entityId,
       search: (q) => searchViaMediaPlayer(ha, entityId, q),
-      browse: async (mediaContentId) => {
-        const result = await browse(ha, entityId, mediaContentId);
+      browse: async (mediaContentId, mediaType) => {
+        const result = await browse(ha, entityId, mediaContentId, mediaType);
         return (result?.children || []).map(shelfFromBrowseNode);
       },
     };
@@ -456,8 +460,9 @@
       client: ha,
       browseEntity: entityId,
       browseRoot: () => ha.callWS({ type: 'media_player/browse_media', entity_id: entityId }),
-      browse: (mediaContentId) => ha.callWS({
-        type: 'media_player/browse_media', entity_id: entityId, media_content_id: mediaContentId,
+      browse: (mediaContentId, mediaType) => ha.callWS({
+        type: 'media_player/browse_media', entity_id: entityId,
+        media_content_id: mediaContentId, media_content_type: mediaType,
       }),
       search: (q) => searchViaMediaPlayer(ha, entityId, q),
       rawSearch: (q) => ha.callWS({ type: 'media_player/search_media', entity_id: entityId, search_query: q }),

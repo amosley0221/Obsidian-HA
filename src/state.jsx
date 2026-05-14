@@ -31,7 +31,20 @@ const SonosStore = (() => {
   const emit = () => listeners.forEach((fn) => fn());
   const get = () => state;
   const set = (mut) => { state = { ...state, ...mut }; emit(); };
-  const update = (fn) => { fn(state); emit(); };
+  // Mutate in place via the provided fn, then re-create the parts of the
+  // state tree that components depend on via useMemo([s.rooms]) etc., so
+  // React's reference-equality check sees a change. The inner room
+  // objects keep their identity — they were mutated by fn — but the
+  // containing map gets a new reference.
+  const update = (fn) => {
+    fn(state);
+    state = {
+      ...state,
+      rooms: { ...state.rooms },
+      playhead: { ...state.playhead },
+    };
+    emit();
+  };
 
   return { subscribe, get, set, update };
 })();

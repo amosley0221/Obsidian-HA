@@ -842,10 +842,11 @@ function ObsidianLibrary({ section, setSection, tk }) {
 
   const drillInto = async (item) => {
     const id = item._mass?.media_content_id || item.id;
+    const mediaType = item._mass?.media_content_type;
     if (!id || !window.MA?.browse) return;
     setDrillLoading(true);
     try {
-      const children = await window.MA.browse(id);
+      const children = await window.MA.browse(id, mediaType);
       setDrillStack((stack) => [...stack, { item, children }]);
     } finally {
       setDrillLoading(false);
@@ -1082,7 +1083,8 @@ function TopbarSearch({ tk }) {
     setDrillStack((s) => [...s, { item, children: [], loading: true }]);
     try {
       const id = item._mass?.media_content_id || item.id;
-      const children = (await window.MA?.browse(id)) || [];
+      const mediaType = item._mass?.media_content_type;
+      const children = (await window.MA?.browse(id, mediaType)) || [];
       setDrillStack((s) => {
         const next = [...s];
         next[next.length - 1] = { item, children, loading: false };
