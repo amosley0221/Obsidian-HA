@@ -54,9 +54,14 @@
     Change this one line whenever you push an update.
   -->
   <script>
-    window.SONOS_V = '7';
+    window.SONOS_V = '8';
     (function () {
       const V = window.SONOS_V;
+      // Register the service worker (required for Android Chrome to show
+      // "Install app" when adding to home screen). No-op fetch handler.
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('sw.js?v=' + V).catch(() => {});
+      }
       const PLAIN = ['src/data.js', 'src/album-color.js', 'src/ha-client.js'];
       const JSX = [
         'src/icons.jsx', 'src/state.jsx', 'src/common.jsx',

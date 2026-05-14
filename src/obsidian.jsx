@@ -3,7 +3,7 @@
 // are derived from the currently-playing track's album art, so the whole
 // UI tints to whatever's on.
 
-function Obsidian({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
+function Obsidian({ theme = 'dark', bgStyle = 'halo', compact = false, onThemeToggle }) {
   const s = useSonos();
   const active = sel.activeRoom(s);
   const track = sel.trackFor(s, s.activeRoomId);
@@ -11,6 +11,9 @@ function Obsidian({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
   const [queueOpen, setQueueOpen] = useState(false);
   const [section, setSection] = useState('listen-now');
   const [expanded, setExpanded] = useState(false);
+  // Compact viewports (Fold unfolded, small tablets) hide the library
+  // column by default; topbar Library button slides it in as an overlay.
+  const [libraryOpen, setLibraryOpen] = useState(false);
 
   const dark = theme === 'dark';
   const tk = dark ? OBS_TOKENS.dark : OBS_TOKENS.light;
@@ -45,19 +48,51 @@ function Obsidian({ theme = 'dark', bgStyle = 'halo', onThemeToggle }) {
         <ObsidianBackdrop track={track} glow={glow} shadow={shadow} tk={tk} mode={bgStyle} />
       )}
 
-      <ObsidianTopbar onQueue={() => setQueueOpen(true)} tk={tk} theme={theme} onThemeToggle={onThemeToggle} />
+      <ObsidianTopbar
+        onQueue={() => setQueueOpen(true)}
+        onLibrary={compact ? () => setLibraryOpen(true) : undefined}
+        tk={tk} theme={theme} onThemeToggle={onThemeToggle} />
 
       <div style={{
         position: 'absolute', inset: '56px var(--obs-pad) var(--obs-pad)',
         display: 'grid',
-        gridTemplateColumns: 'minmax(280px, 320px) minmax(0, 1fr) minmax(300px, 340px)',
+        gridTemplateColumns: compact
+          ? 'minmax(260px, 320px) minmax(0, 1fr)'
+          : 'minmax(280px, 320px) minmax(0, 1fr) minmax(300px, 340px)',
         gap: 'var(--obs-gap)',
         minHeight: 0,
       }}>
         <ObsidianRooms tk={tk} />
         <ObsidianHero track={track} phead={phead} active={active} onExpand={() => setExpanded(true)} tk={tk} />
-        <ObsidianLibrary section={section} setSection={setSection} tk={tk} />
+        {!compact && <ObsidianLibrary section={section} setSection={setSection} tk={tk} />}
       </div>
+
+      {compact && libraryOpen && (
+        <>
+          <div onClick={() => setLibraryOpen(false)} style={{
+            position: 'absolute', inset: 0, zIndex: 20,
+            background: 'rgba(0,0,0,.35)',
+            backdropFilter: 'blur(4px)', WebkitBackdropFilter: 'blur(4px)',
+            animation: 'obs-fade 160ms ease',
+          }} />
+          <div style={{
+            position: 'absolute',
+            top: 64, right: 16, bottom: 16,
+            width: 'min(360px, calc(100vw - 32px))',
+            zIndex: 21,
+            display: 'flex', flexDirection: 'column',
+            animation: 'obs-slide-in 220ms cubic-bezier(.2,.85,.25,1)',
+          }}>
+            <style>{`
+              @keyframes obs-slide-in {
+                from { transform: translateX(12px); opacity: 0; }
+                to { transform: none; opacity: 1; }
+              }
+            `}</style>
+            <ObsidianLibrary section={section} setSection={setSection} tk={tk} />
+          </div>
+        </>
+      )}
 
       <QueueSheet open={queueOpen} onClose={() => setQueueOpen(false)} theme={dark ? 'dark' : 'light'} />
       {expanded && <ObsidianFullscreen track={track} phead={phead} active={active} onClose={() => setExpanded(false)} tk={tk} />}
@@ -149,7 +184,7 @@ function ObsidianBackdrop({ track, glow, shadow, tk, mode }) {
 }
 
 // ─── Topbar ─────────────────────────────────────────────────────────────
-function ObsidianTopbar({ onQueue, tk, theme, onThemeToggle }) {
+function ObsidianTopbar({ onQueue, onLibrary, tk, theme, onThemeToggle }) {
   const s = useSonos();
   const groupSize = sel.groupedWith(s, s.activeRoomId).length;
   const room = DATA.rooms.find((r) => r.id === s.activeRoomId);
@@ -180,6 +215,11 @@ function ObsidianTopbar({ onQueue, tk, theme, onThemeToggle }) {
           background: 'var(--obs-accent)', color: tk.isDark ? '#0a0a0a' : '#fff', fontWeight: 600,
         }}>+{groupSize - 1}</span>}
       </button>
+      {onLibrary && (
+        <button style={topBtn(tk)} onClick={onLibrary}>
+          <span style={{ whiteSpace: 'nowrap' }}>Library</span>
+        </button>
+      )}
       <button style={topBtn(tk)} onClick={onQueue}><Icons.Queue size={16} /><span style={{ whiteSpace: 'nowrap' }}>Up Next</span></button>
       {onThemeToggle && (
         <button onClick={onThemeToggle}

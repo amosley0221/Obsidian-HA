@@ -73,11 +73,18 @@ function ConnectingScreen({ status }) {
 function App() {
   const [theme, setTheme] = useTheme();
   const { w: vw, h: vh } = useViewport();
-  // iPad → desktop only in landscape; portrait gets the mobile column.
-  // Other devices → desktop at >= 900px (the 3-column hero layout needs
-  // room to breathe — narrower viewports like a Fold unfolded get the
-  // cleaner single-column layout instead).
-  const isMobile = isIpad ? vw <= vh : vw < 900;
+  // Layout tiers:
+  //  - mobile  : single column + bottom tab bar (phones, Fold folded, iPad portrait)
+  //  - compact : 2-column rooms + hero, library opens via a topbar button
+  //              (Fold unfolded, small tablets ~700-1100px)
+  //  - desktop : full 3-column rooms + hero + library (>=1100px or iPad landscape)
+  let layout;
+  if (isIpad) layout = vw > vh ? 'desktop' : 'mobile';
+  else if (vw < 700) layout = 'mobile';
+  else if (vw < 1100) layout = 'compact';
+  else layout = 'desktop';
+  const isMobile = layout === 'mobile';
+  const isCompact = layout === 'compact';
   const store = useSonos();
   const roomCount = Object.keys(store.rooms).length;
 
@@ -157,7 +164,7 @@ function App() {
 
   return isMobile
     ? <ObsidianMobile theme={theme} bgStyle="halo" onThemeToggle={toggle} />
-    : <Obsidian theme={theme} bgStyle="halo" onThemeToggle={toggle} />;
+    : <Obsidian theme={theme} bgStyle="halo" compact={isCompact} onThemeToggle={toggle} />;
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
