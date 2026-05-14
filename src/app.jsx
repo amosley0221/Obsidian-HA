@@ -1,14 +1,27 @@
 // Sonos Remote — standalone Home Assistant panel.
-// Renders the Obsidian direction full-bleed: dark by default with a light
-// option. Switches between desktop and mobile layouts based on viewport.
-// Accent color derives from the currently-playing album art.
+// Connects to HA via long-lived token, mirrors Sonos / Music Assistant
+// state into the Obsidian UI. Renders desktop layout on iPad and any
+// viewport >= 700px; mobile otherwise.
+
+const isIpad = (() => {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  if (/iPad/.test(ua)) return true;
+  // iPadOS 13+ reports as Macintosh but has touch support.
+  if (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1) return true;
+  return false;
+})();
 
 function useViewport() {
   const [vw, setVw] = useState(typeof window !== 'undefined' ? window.innerWidth : 1440);
   useEffect(() => {
     const onResize = () => setVw(window.innerWidth);
     window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    window.addEventListener('orientationchange', onResize);
+    return () => {
+      window.removeEventListener('resize', onResize);
+      window.removeEventListener('orientationchange', onResize);
+    };
   }, []);
   return vw;
 }
@@ -30,10 +43,88 @@ function useTheme() {
   return [theme, setTheme];
 }
 
+function ConnectingScreen({ status }) {
+  return (
+    <div style={{
+      position: 'absolute', inset: 0, background: '#000', color: '#fff',
+      display: 'grid', placeItems: 'center',
+      fontFamily: "'Geist', ui-sans-serif, system-ui, sans-serif",
+    }}>
+      <div style={{ textAlign: 'center' }}>
+        <div style={{
+          width: 44, height: 44, margin: '0 auto 18px',
+          borderRadius: 999, border: '2px solid rgba(255,255,255,.2)',
+          borderTopColor: '#fff',
+          animation: 'spin 900ms linear infinite',
+        }} />
+        <style>{`@keyframes spin { to { transform: rotate(360deg) } }`}</style>
+        <div style={{ fontSize: 14, color: 'rgba(255,255,255,.6)' }}>
+          {status === 'connecting' ? 'Connecting to Home Assistant…' : 'Loading rooms…'}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function App() {
   const [theme, setTheme] = useTheme();
   const vw = useViewport();
-  const isMobile = vw < 760;
+  const isMobile = !isIpad && vw < 700;
+  const store = useSonos();
+  const roomCount = Object.keys(store.rooms).length;
+
+  const [config, setConfig] = useState(() => loadSetup());
+  const [status, setStatus] = useState('idle');
+  const [error, setError] = useState(null);
+  const haRef = useRef(null);
+
+  // Reset hash → wipe stored creds.
+  useEffect(() => {
+    if (window.location.hash === '#reset') {
+      clearSetup();
+      window.location.hash = '';
+      setConfig({ url: window.location.origin, token: '' });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!config.token) { setStatus('idle'); return; }
+    let cancelled = false;
+    setError(null);
+    setStatus('connecting');
+    startHaBridge({
+      url: config.url,
+      token: config.token,
+      onStatus: (s) => !cancelled && setStatus(s),
+    }).then((ha) => {
+      haRef.current = ha;
+    }).catch((e) => {
+      if (cancelled) return;
+      setError(e?.message || String(e));
+      setStatus('error');
+    });
+    return () => {
+      cancelled = true;
+      try { haRef.current?.stop(); } catch (e) {}
+      haRef.current = null;
+    };
+  }, [config.url, config.token]);
+
+  if (!config.token || status === 'auth_invalid' || status === 'error') {
+    return <SetupScreen
+      initialUrl={config.url}
+      initialError={status === 'auth_invalid' ? 'auth_invalid' : (error || null)}
+      onSave={({ url, token }) => {
+        saveSetup({ url, token });
+        setConfig({ url, token });
+        setError(null);
+      }} />;
+  }
+
+  if (status !== 'connected' || roomCount === 0) {
+    return <ConnectingScreen status={status} />;
+  }
+
   const toggle = () => setTheme(theme === 'dark' ? 'light' : 'dark');
 
   return isMobile

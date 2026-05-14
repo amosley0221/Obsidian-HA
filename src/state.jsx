@@ -17,15 +17,13 @@ const formatTime = (s) => {
 const SonosStore = (() => {
   const listeners = new Set();
   let state = {
-    rooms: { ...DATA.initialRoomState },
-    activeRoomId: 'living',
-    queue: ['t1', 't2', 't4', 't7', 't9'],
+    rooms: {},
+    activeRoomId: null,
+    queue: [],
     queueIndex: 0,
-    // Per-zone playhead seconds; advances when "playing".
-    playhead: { living: 47, office: 91, bedroom: 0, dining: 47, bath: 0, garage: 0, move: 0 },
-    favorites: new Set(['t1', 't5', 'p2']),
+    playhead: {},
+    favorites: new Set(),
     eq: { bass: 0, treble: 0, loudness: true, balance: 0 },
-    // For drag-to-group demo state
     pendingGroupTarget: null,
   };
 
@@ -124,29 +122,8 @@ const SonosActions = {
   setEq(patch) { SonosStore.update((s) => { s.eq = { ...s.eq, ...patch }; }); },
 };
 
-// Tick: advance playhead for every "playing" room. Skips to next track at end.
-(() => {
-  if (window.__sonosTick) clearInterval(window.__sonosTick);
-  window.__sonosTick = setInterval(() => {
-    SonosStore.update((s) => {
-      let changed = false;
-      Object.entries(s.rooms).forEach(([id, r]) => {
-        if (!r.playing || !r.trackId) return;
-        const t = DATA.tracks.find((x) => x.id === r.trackId);
-        if (!t) return;
-        s.playhead[id] = (s.playhead[id] || 0) + 0.5;
-        if (s.playhead[id] >= t.duration) {
-          // Just loop / advance for demo.
-          s.queueIndex = (s.queueIndex + 1) % s.queue.length;
-          r.trackId = s.queue[s.queueIndex];
-          s.playhead[id] = 0;
-        }
-        changed = true;
-      });
-      if (!changed) return;
-    });
-  }, 500);
-})();
+// The HA bridge installs its own playhead tick using interpolation from
+// media_position + media_position_updated_at, so no demo tick here.
 
 // Derived getters
 const sel = {

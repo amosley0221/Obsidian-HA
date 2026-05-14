@@ -12,8 +12,8 @@ function AlbumArt({ art, title, subtitle, size, radius = 14, style }) {
   if (!art) {
     return <div style={{ width: size, height: size, borderRadius: radius, background: '#222', ...style }} />;
   }
-  // A subtle inner ring + corner glow built from the dominant color.
   const ring = `inset 0 0 0 0.5px rgba(255,255,255,.18), inset 0 1px 0 rgba(255,255,255,.16)`;
+  const imgUrl = art.artUrl || art.url;
   return (
     <div className="album-art" style={{
       width: size, height: size, borderRadius: radius,
@@ -22,30 +22,41 @@ function AlbumArt({ art, title, subtitle, size, radius = 14, style }) {
       flex: '0 0 auto',
       ...style,
     }}>
-      {/* Soft top-right highlight */}
+      {imgUrl && (
+        <img src={imgUrl} alt=""
+             crossOrigin="anonymous"
+             draggable={false}
+             onError={(e) => { e.currentTarget.style.display = 'none'; }}
+             style={{
+               position: 'absolute', inset: 0,
+               width: '100%', height: '100%', objectFit: 'cover',
+               pointerEvents: 'none',
+             }} />
+      )}
       <div style={{
         position: 'absolute', inset: 0,
         background: 'radial-gradient(ellipse at 75% 15%, rgba(255,255,255,.22), transparent 55%)',
         pointerEvents: 'none',
       }} />
-      {/* Title typography baked into the art */}
-      <div style={{
-        position: 'absolute', left: '8%', right: '8%', bottom: '10%',
-        color: 'rgba(255,255,255,.94)',
-        textShadow: '0 1px 12px rgba(0,0,0,.25)',
-        fontFamily: 'var(--font-display)',
-      }}>
+      {!imgUrl && (
         <div style={{
-          fontSize: Math.max(11, size * 0.085),
-          fontWeight: 600, lineHeight: 1.1, letterSpacing: '-0.01em',
-          textWrap: 'balance',
-        }}>{title}</div>
-        {subtitle && <div style={{
-          fontSize: Math.max(9, size * 0.055), marginTop: 4,
-          opacity: 0.75, letterSpacing: '0.04em', textTransform: 'uppercase',
-          fontWeight: 500,
-        }}>{subtitle}</div>}
-      </div>
+          position: 'absolute', left: '8%', right: '8%', bottom: '10%',
+          color: 'rgba(255,255,255,.94)',
+          textShadow: '0 1px 12px rgba(0,0,0,.25)',
+          fontFamily: 'var(--font-display)',
+        }}>
+          <div style={{
+            fontSize: Math.max(11, size * 0.085),
+            fontWeight: 600, lineHeight: 1.1, letterSpacing: '-0.01em',
+            textWrap: 'balance',
+          }}>{title}</div>
+          {subtitle && <div style={{
+            fontSize: Math.max(9, size * 0.055), marginTop: 4,
+            opacity: 0.75, letterSpacing: '0.04em', textTransform: 'uppercase',
+            fontWeight: 500,
+          }}>{subtitle}</div>}
+        </div>
+      )}
     </div>
   );
 }
