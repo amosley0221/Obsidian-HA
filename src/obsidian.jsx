@@ -63,7 +63,7 @@ function Obsidian({ theme = 'dark', bgStyle = 'halo', compact = false, onThemeTo
         minHeight: 0,
       }}>
         <ObsidianRooms tk={tk} />
-        <ObsidianHero track={track} phead={phead} active={active} onExpand={() => setExpanded(true)} tk={tk} />
+        <ObsidianHero track={track} phead={phead} active={active} compact={compact} onExpand={() => setExpanded(true)} tk={tk} />
         {!compact && <ObsidianLibrary section={section} setSection={setSection} tk={tk} />}
       </div>
 
@@ -427,8 +427,70 @@ const topBtn = (tk) => ({
 // ─── Rooms column ───────────────────────────────────────────────────────
 function ObsidianRooms({ tk }) {
   const s = useSonos();
-  const [dragRoom, setDragRoom] = useState(null);
+  // Pointer-based drag-to-group — works on mouse + touch. Long-press on
+  // touch (300ms) and small-movement threshold on mouse so a regular tap
+  // / click on a room doesn't accidentally start a drag.
+  const [drag, setDrag] = useState(null);          // { id, x, y } once active
   const [hoverRoom, setHoverRoom] = useState(null);
+  const cardRefs = useRef({});
+  const pressInfo = useRef(null);                  // armed but not yet dragging
+  const longPressTimer = useRef(null);
+
+  const findRoomAtPoint = (clientX, clientY) => {
+    for (const r of DATA.rooms) {
+      const el = cardRefs.current[r.id];
+      if (!el) continue;
+      const rect = el.getBoundingClientRect();
+      if (clientX >= rect.left && clientX <= rect.right
+       && clientY >= rect.top && clientY <= rect.bottom) {
+        return r.id;
+      }
+    }
+    return null;
+  };
+
+  const onCardPointerDown = (e, roomId) => {
+    if (e.target.closest('[data-no-drag]')) return;
+    pressInfo.current = {
+      id: roomId,
+      startX: e.clientX, startY: e.clientY,
+      pointerType: e.pointerType, pointerId: e.pointerId,
+      target: e.currentTarget,
+    };
+    if (e.pointerType === 'touch') {
+      longPressTimer.current = setTimeout(() => {
+        if (!pressInfo.current) return;
+        const { id, startX, startY, pointerId, target } = pressInfo.current;
+        setDrag({ id, x: startX, y: startY });
+        try { target.setPointerCapture?.(pointerId); } catch (err) {}
+      }, 300);
+    }
+  };
+  const onContainerPointerMove = (e) => {
+    if (drag) {
+      setDrag((d) => ({ ...d, x: e.clientX, y: e.clientY }));
+      const hit = findRoomAtPoint(e.clientX, e.clientY);
+      setHoverRoom(hit && hit !== drag.id ? hit : null);
+      return;
+    }
+    // Mouse/pen: arm-then-start once movement exceeds a small threshold.
+    const pi = pressInfo.current;
+    if (pi && pi.pointerType !== 'touch') {
+      const dx = e.clientX - pi.startX;
+      const dy = e.clientY - pi.startY;
+      if (Math.sqrt(dx * dx + dy * dy) > 5) {
+        setDrag({ id: pi.id, x: e.clientX, y: e.clientY });
+      }
+    }
+  };
+  const onContainerPointerUp = () => {
+    clearTimeout(longPressTimer.current);
+    if (drag && hoverRoom && hoverRoom !== drag.id) {
+      SonosActions.groupRooms(hoverRoom, drag.id);
+    }
+    setDrag(null); setHoverRoom(null);
+    pressInfo.current = null;
+  };
 
   const groups = useMemo(() => {
     const out = []; const byGroup = new Map();
@@ -457,7 +519,11 @@ function ObsidianRooms({ tk }) {
     <div style={panel(tk)}>
       <PanelHeader tk={tk} title={`Rooms · ${DATA.rooms.length}`}
                    trailing={<button style={ghostBtn(tk)}><Icons.Plus size={14} /> Group</button>} />
-      <div style={{ overflowY: 'auto', flex: 1, padding: '4px 8px 14px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div
+        onPointerMove={onContainerPointerMove}
+        onPointerUp={onContainerPointerUp}
+        onPointerCancel={onContainerPointerUp}
+        style={{ overflowY: 'auto', flex: 1, padding: '4px 8px 14px', display: 'flex', flexDirection: 'column', gap: 6, touchAction: drag ? 'none' : 'auto' }}>
         {groups.map((g, gi) => (
           <div key={gi} style={{
             position: 'relative',
@@ -494,47 +560,76 @@ function ObsidianRooms({ tk }) {
                 room={r}
                 state={s.rooms[r.id]}
                 active={s.activeRoomId === r.id}
-                hovered={hoverRoom === r.id && dragRoom && dragRoom !== r.id}
+                hovered={hoverRoom === r.id && drag && drag.id !== r.id}
+                lifted={drag?.id === r.id}
                 inGroup={!!g.groupId}
                 isGroupMaster={!!g.groupId && idx === 0}
+                cardRef={(el) => (cardRefs.current[r.id] = el)}
                 onLeaveGroup={() => SonosActions.ungroup(r.id)}
                 onClick={() => SonosActions.setActiveRoom(r.id)}
                 onPlayToggle={() => SonosActions.togglePlayRoom(r.id)}
                 onVolume={(v) => SonosActions.setVolume(r.id, v)}
-                onDragStart={() => setDragRoom(r.id)}
-                onDragEnd={() => {
-                  if (dragRoom && hoverRoom && dragRoom !== hoverRoom) {
-                    SonosActions.groupRooms(hoverRoom, dragRoom);
-                  }
-                  setDragRoom(null); setHoverRoom(null);
-                }}
-                onDragOver={() => setHoverRoom(r.id)}
+                onPointerDown={(e) => onCardPointerDown(e, r.id)}
               />
             ))}
           </div>
         ))}
       </div>
+
+      {drag && (() => {
+        const room = DATA.rooms.find((r) => r.id === drag.id);
+        if (!room) return null;
+        const st = s.rooms[drag.id] || {};
+        const tr = st.trackId ? DATA.tracks.find((x) => x.id === st.trackId) : null;
+        return (
+          <div style={{
+            position: 'fixed', left: drag.x - 110, top: drag.y - 24,
+            width: 220, pointerEvents: 'none', zIndex: 100,
+            transform: 'rotate(-1.5deg) scale(1.04)',
+          }}>
+            <div style={{
+              padding: '10px 12px',
+              background: tk.surfaceStrong,
+              border: `0.5px solid ${tk.border}`,
+              borderRadius: 12,
+              boxShadow: '0 22px 48px rgba(0,0,0,.45)',
+              backdropFilter: 'blur(24px)', WebkitBackdropFilter: 'blur(24px)',
+              display: 'flex', alignItems: 'center', gap: 10,
+              color: tk.text,
+            }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8,
+                background: tr?.art?.bg || tk.surface,
+              }} />
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 540 }}>{room.name}</div>
+                <div style={{ fontSize: 10.5, color: tk.text3 }}>Drop on a room to group</div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
-function RoomCard({ room, state, active, hovered, inGroup, isGroupMaster, onLeaveGroup, tk, onClick, onPlayToggle, onVolume, onDragStart, onDragEnd, onDragOver }) {
+function RoomCard({ room, state, active, hovered, lifted, inGroup, isGroupMaster, cardRef, onLeaveGroup, tk, onClick, onPlayToggle, onVolume, onPointerDown }) {
   const track = state.trackId ? DATA.tracks.find((t) => t.id === state.trackId) : null;
   return (
     <div
+      ref={cardRef}
       onClick={onClick}
-      draggable
-      onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; onDragStart?.(); }}
-      onDragEnd={onDragEnd}
-      onDragEnter={onDragOver}
-      onDragOver={(e) => e.preventDefault()}
+      onPointerDown={onPointerDown}
       style={{
         position: 'relative',
         padding: '10px 10px 10px',
         background: active ? tk.surfaceStrong : 'transparent',
         borderRadius: 'var(--obs-radius-sm)',
-        cursor: 'pointer', transition: 'background 180ms',
+        cursor: 'pointer', transition: 'background 180ms, opacity 160ms, transform 160ms',
+        opacity: lifted ? 0.4 : 1,
+        transform: hovered ? 'scale(.985)' : 'scale(1)',
         boxShadow: hovered ? '0 0 0 1.5px var(--obs-accent), 0 0 0 5px color-mix(in oklab, var(--obs-accent) 22%, transparent)' : 'none',
+        touchAction: 'manipulation',
       }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <div style={{
@@ -562,7 +657,7 @@ function RoomCard({ room, state, active, hovered, inGroup, isGroupMaster, onLeav
           </div>
         </div>
         {inGroup && onLeaveGroup && (
-          <button
+          <button data-no-drag
             onClick={(e) => { e.stopPropagation(); onLeaveGroup(); }}
             aria-label="Leave group"
             title="Leave group"
@@ -575,7 +670,7 @@ function RoomCard({ room, state, active, hovered, inGroup, isGroupMaster, onLeav
             <Icons.Close size={11} />
           </button>
         )}
-        <button onClick={(e) => { e.stopPropagation(); onPlayToggle(); }} style={{
+        <button data-no-drag onClick={(e) => { e.stopPropagation(); onPlayToggle(); }} style={{
           width: 30, height: 30, borderRadius: 999,
           border: 0, background: state.playing ? tk.invertBg : tk.surfaceStrong,
           color: state.playing ? tk.invertText : tk.text, cursor: 'pointer',
@@ -584,7 +679,7 @@ function RoomCard({ room, state, active, hovered, inGroup, isGroupMaster, onLeav
           {state.playing ? <Icons.Pause size={13} /> : <Icons.Play size={13} />}
         </button>
       </div>
-      <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div data-no-drag style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 8 }}>
         <Icons.VolMin size={14} style={{ opacity: 0.5 }} />
         <div style={{ flex: 1 }}>
           <VolumeSlider value={state.volume} onChange={(v) => onVolume(v)} accent={tk.text} track={tk.track} />
@@ -596,7 +691,7 @@ function RoomCard({ room, state, active, hovered, inGroup, isGroupMaster, onLeav
 }
 
 // ─── Hero / Now Playing ─────────────────────────────────────────────────
-function ObsidianHero({ track, phead, active, tk, onExpand }) {
+function ObsidianHero({ track, phead, active, compact = false, tk, onExpand }) {
   const s = useSonos();
   const fav = s.favorites.has(track?.id);
   if (!track) {
@@ -615,16 +710,27 @@ function ObsidianHero({ track, phead, active, tk, onExpand }) {
   return (
     <div style={{
       ...panel(tk),
-      padding: 28,
+      padding: compact ? 22 : 28,
       display: 'grid',
       gridTemplateRows: 'minmax(0, 1fr) auto',
-      gap: 22,
+      gap: compact ? 18 : 22,
     }}>
-      <div style={{ display: 'grid', placeItems: 'center', minHeight: 0 }}>
-        <div onClick={onExpand} style={{ cursor: 'zoom-in', position: 'relative' }}>
+      <div style={{ display: 'grid', placeItems: 'center', minHeight: 0, minWidth: 0 }}>
+        <div onClick={onExpand} style={{
+          cursor: 'zoom-in', position: 'relative',
+          // Square that scales to whichever dimension (column width or row
+          // height) is the binding constraint, capped at a sane max so it
+          // doesn't balloon on wide desktops.
+          width: 'min(100%, calc(var(--hero-cap, 400px)))',
+          aspectRatio: '1 / 1',
+          maxHeight: '100%',
+        }}>
           <AlbumArt art={track.art} title={track.album} subtitle={track.artist}
-                    size={400} radius={22}
-                    style={{ boxShadow: `0 30px 80px -20px ${track.art.shadow}, 0 0 0 .5px ${tk.border}` }} />
+                    size={compact ? 280 : 400} radius={compact ? 18 : 22}
+                    style={{
+                      width: '100%', height: '100%',
+                      boxShadow: `0 30px 80px -20px ${track.art.shadow}, 0 0 0 .5px ${tk.border}`,
+                    }} />
         </div>
       </div>
 
