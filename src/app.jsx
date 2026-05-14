@@ -74,8 +74,10 @@ function App() {
   const [theme, setTheme] = useTheme();
   const { w: vw, h: vh } = useViewport();
   // iPad → desktop only in landscape; portrait gets the mobile column.
-  // Other devices → desktop at >= 700px wide.
-  const isMobile = isIpad ? vw <= vh : vw < 700;
+  // Other devices → desktop at >= 900px (the 3-column hero layout needs
+  // room to breathe — narrower viewports like a Fold unfolded get the
+  // cleaner single-column layout instead).
+  const isMobile = isIpad ? vw <= vh : vw < 900;
   const store = useSonos();
   const roomCount = Object.keys(store.rooms).length;
 
