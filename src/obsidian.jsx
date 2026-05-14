@@ -828,7 +828,11 @@ function ObsidianLibrary({ section, setSection, tk }) {
         )}
         {!drillLoading && items.length === 0 && (
           <div style={{ padding: '20px', textAlign: 'center', color: tk.text3, fontSize: 12 }}>
-            {current ? 'Empty.' : 'Library still loading from Music Assistant…'}
+            {current
+              ? 'Empty.'
+              : (DATA.libraryLoaded
+                  ? 'Nothing in this section yet.'
+                  : 'Loading library from Music Assistant…')}
           </div>
         )}
         {items.map((it) => {

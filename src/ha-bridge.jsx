@@ -252,22 +252,36 @@
     }
   }
 
-  function shelfFromBrowseNode(node) {
+  function shelfFromBrowseNode(node, typeOverride) {
     const url = node.thumbnail || null;
     const fallback = AlbumColor.fallbackArt(node.title || node.media_content_id || '');
     const art = url ? { ...fallback, artUrl: url } : fallback;
+    const effectiveType = typeOverride || node.media_content_type;
     return {
       id: node.media_content_id,
       title: node.title,
       artist: '',
-      subtitle: (node.media_class || node.media_content_type || '').toString(),
+      subtitle: (typeOverride || node.media_class || node.media_content_type || '').toString(),
       art,
       _mass: {
         uri: node.media_content_id,
         media_content_id: node.media_content_id,
-        media_content_type: node.media_content_type,
+        // Force the type so downstream drill / play behavior treats it
+        // correctly even when MA tags directories with media_class=directory.
+        media_content_type: effectiveType,
       },
     };
+  }
+
+  // Map a branch title to the type its children should inherit.
+  function hintFromTitle(title) {
+    const t = (title || '').toLowerCase();
+    if (/artist/.test(t))                 return 'artist';
+    if (/album/.test(t))                  return 'album';
+    if (/playlist/.test(t))               return 'playlist';
+    if (/radio|station/.test(t))          return 'radio';
+    if (/track|song/.test(t))             return 'track';
+    return null;
   }
 
   // Walk an MA browse tree and bucket items by media_class. Caps work by
@@ -285,10 +299,15 @@
     }
 
     const visited = new Set();
-    const MAX_DEPTH = 5;
-    const PER_BUCKET = 40;
+    const MAX_DEPTH = 6;
+    const PER_BUCKET = 60;
 
-    async function walk(node, depth) {
+    // typeHint is set when a parent branch's title indicates what its
+    // children should be ('Artists' → typeHint='artist'). MA tags artist /
+    // album / playlist nodes with media_class='directory', so without the
+    // hint they'd just look like containers to recurse into and we'd flatten
+    // everything to tracks.
+    async function walk(node, depth, typeHint) {
       if (depth > MAX_DEPTH) return;
       if (node?.media_content_id) {
         if (visited.has(node.media_content_id)) return;
@@ -301,27 +320,35 @@
       for (const child of children) {
         const cls = (child.media_class || '').toLowerCase();
         const type = (child.media_content_type || '').toLowerCase();
-        // Order matters: MA tags every audio item with media_class='music',
-        // so we have to consult media_content_type FIRST to distinguish
-        // artists/albums/playlists from raw tracks.
-        if (type === 'artist' || cls === 'artist') {
-          if (shelves.artists.length < PER_BUCKET) shelves.artists.push(shelfFromBrowseNode(child));
-        } else if (type === 'album' || cls === 'album') {
-          if (shelves.albums.length < PER_BUCKET) shelves.albums.push(shelfFromBrowseNode(child));
-        } else if (type === 'playlist' || cls === 'playlist') {
-          if (shelves.playlists.length < PER_BUCKET) shelves.playlists.push(shelfFromBrowseNode(child));
-        } else if (type === 'radio' || cls === 'radio' || cls === 'channel') {
-          if (shelves.radios.length < PER_BUCKET) shelves.radios.push(shelfFromBrowseNode(child));
-        } else if (type === 'track' || cls === 'track' || cls === 'music' || type === 'music') {
-          if (shelves.tracks.length < PER_BUCKET) shelves.tracks.push(shelfFromBrowseNode(child));
+        // Explicit type/class wins; otherwise inherit from parent branch.
+        let cat = null;
+        if (type === 'artist' || cls === 'artist') cat = 'artist';
+        else if (type === 'album' || cls === 'album') cat = 'album';
+        else if (type === 'playlist' || cls === 'playlist') cat = 'playlist';
+        else if (type === 'radio' || cls === 'radio' || cls === 'channel') cat = 'radio';
+        else if (type === 'track' || cls === 'track' || cls === 'music' || type === 'music') cat = 'track';
+        else if (typeHint && child.can_expand) cat = typeHint;
+
+        if (cat === 'artist') {
+          if (shelves.artists.length < PER_BUCKET) shelves.artists.push(shelfFromBrowseNode(child, 'artist'));
+        } else if (cat === 'album') {
+          if (shelves.albums.length < PER_BUCKET) shelves.albums.push(shelfFromBrowseNode(child, 'album'));
+        } else if (cat === 'playlist') {
+          if (shelves.playlists.length < PER_BUCKET) shelves.playlists.push(shelfFromBrowseNode(child, 'playlist'));
+        } else if (cat === 'radio') {
+          if (shelves.radios.length < PER_BUCKET) shelves.radios.push(shelfFromBrowseNode(child, 'radio'));
+        } else if (cat === 'track') {
+          if (shelves.tracks.length < PER_BUCKET) shelves.tracks.push(shelfFromBrowseNode(child, 'track'));
         } else if (child.can_expand && depth < MAX_DEPTH) {
-          // Directory / category → drill in
-          await walk(child, depth + 1);
+          // Unclassified directory — descend, passing along an inferred
+          // hint based on this child's title ("Artists", "Albums", ...).
+          const nextHint = hintFromTitle(child.title) || typeHint;
+          await walk(child, depth + 1, nextHint);
         }
         if (Object.values(shelves).every((b) => b.length >= PER_BUCKET)) return;
       }
     }
-    await walk(root, 0);
+    await walk(root, 0, null);
     console.log('[sonos-remote] Browse complete:',
       'playlists', shelves.playlists.length,
       'albums',    shelves.albums.length,
@@ -391,6 +418,7 @@
       ...DATA.libraryTracks.slice(0, 3),
       ...DATA.playlists.slice(0, 3),
     ];
+    DATA.libraryLoaded = true;
 
     SonosStore.update(() => {});
 
@@ -474,11 +502,25 @@
         });
       },
       groupRooms(roomA, roomB) {
+        // Optimistic local update so the room cards regroup immediately;
+        // the HA state_changed event will reconcile a moment later.
+        SonosStore.update((s) => {
+          const a = s.rooms[roomA]; const b = s.rooms[roomB];
+          if (!a || !b) return;
+          const gid = a.groupId || b.groupId || roomA;
+          a.groupId = gid; b.groupId = gid;
+          if (a.trackId) { b.trackId = a.trackId; b.playing = a.playing; }
+        });
         ha.callService('media_player', 'join', {
           entity_id: roomA, group_members: [roomB],
         });
       },
       ungroup(roomId) {
+        // Optimistic: drop the room from its group immediately so the UI
+        // reflects the leave without waiting for the WS state_changed echo.
+        SonosStore.update((s) => {
+          if (s.rooms[roomId]) s.rooms[roomId].groupId = null;
+        });
         ha.callService('media_player', 'unjoin', { entity_id: roomId });
       },
       playTrack(id) {

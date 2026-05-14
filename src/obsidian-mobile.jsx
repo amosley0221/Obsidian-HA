@@ -723,7 +723,11 @@ function OMLibrary({ tk }) {
       )}
       {!drillLoading && items.length === 0 && (
         <div style={{ marginTop: 24, color: tk.text3, fontSize: 13, textAlign: 'center' }}>
-          {current ? 'Empty.' : 'Library still loading…'}
+          {current
+            ? 'Empty.'
+            : (DATA.libraryLoaded
+                ? 'Nothing in this section yet.'
+                : 'Loading library…')}
         </div>
       )}
 
