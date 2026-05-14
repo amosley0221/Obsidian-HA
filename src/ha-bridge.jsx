@@ -207,26 +207,30 @@
     const plural = mediaType + 's';
     const base = configEntryId ? { config_entry_id: configEntryId } : {};
     const variants = [
+      { type: `music_assistant/library/${plural}`, ...base, limit: 30, offset: 0 },
+      { type: `music_assistant/library/${plural}`, ...base, limit: 30, offset: 0, favorite: true },
+      { type: `music_assistant/library/${plural}`, ...base },
       { type: 'music_assistant/library', ...base, media_type: mediaType, limit: 30, offset: 0 },
       { type: 'music_assistant/get_library', ...base, media_type: mediaType, limit: 30 },
       { type: 'music_assistant/library_items', ...base, media_type: mediaType, limit: 30 },
-      { type: `music_assistant/library/${plural}`, ...base, limit: 30 },
       { type: `mass/library/${plural}`, ...base, limit: 30 },
       { type: 'mass/library', ...base, media_type: mediaType, limit: 30 },
       // No config_entry_id fallback
-      { type: 'music_assistant/library', media_type: mediaType, limit: 30 },
       { type: `music_assistant/library/${plural}`, limit: 30 },
+      { type: 'music_assistant/library', media_type: mediaType, limit: 30 },
     ];
     for (const payload of variants) {
       try {
         const result = await ha.callWS(payload);
         const list = extractList(result);
         if (list) {
-          console.log('[sonos-remote] MA', payload.type, mediaType, '→', list.length, 'items');
+          console.log('[sonos-remote] ✓ MA', payload.type, mediaType, '→', list.length, 'items');
+          if (list[0]) console.log('[sonos-remote]   sample:', list[0]);
           return list;
         }
+        console.log('[sonos-remote]   shape', payload.type, 'returned non-list:', result);
       } catch (e) {
-        // ignore — try next variant
+        console.log('[sonos-remote]   shape', payload.type, '✗', e?.message || e);
       }
     }
     console.warn('[sonos-remote] No MA library command worked for', mediaType);
@@ -240,6 +244,8 @@
       { type: 'music_assistant/search', ...base,
         search_query: query, media_types: ['track', 'album', 'artist', 'playlist'], limit: 8 },
       { type: 'music_assistant/search', ...base, search_query: query, limit: 8 },
+      { type: 'music_assistant/search', ...base, search: query, limit: 8 },
+      { type: 'music_assistant/search', ...base, query: query, limit: 8 },
       { type: 'mass/search', ...base, search_query: query,
         media_types: ['track', 'album', 'artist', 'playlist'], limit: 8 },
       { type: 'music_assistant/search', search_query: query, limit: 8 },
@@ -247,8 +253,10 @@
     for (const payload of variants) {
       try {
         const result = await ha.callWS(payload);
-        if (!result) continue;
-        // Result might be { tracks, albums, ... } or { items: [...] } or a flat array.
+        if (!result) {
+          console.log('[sonos-remote]   search', payload.type, 'returned null');
+          continue;
+        }
         let tracks = [], albums = [], artists = [], playlists = [];
         if (Array.isArray(result.tracks)    || Array.isArray(result.albums)
          || Array.isArray(result.artists)   || Array.isArray(result.playlists)) {
@@ -268,12 +276,12 @@
             }
           }
         }
-        console.log('[sonos-remote] MA search via', payload.type,
+        console.log('[sonos-remote] ✓ MA search via', payload.type,
           '→ tracks', tracks.length, 'albums', albums.length,
           'artists', artists.length, 'playlists', playlists.length);
         return { tracks, albums, artists, playlists };
       } catch (e) {
-        // try next
+        console.log('[sonos-remote]   search', payload.type, '✗', e?.message || e);
       }
     }
     console.warn('[sonos-remote] All MA search variants failed for', query);
