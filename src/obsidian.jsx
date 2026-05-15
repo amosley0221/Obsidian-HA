@@ -432,6 +432,7 @@ function ObsidianRooms({ tk }) {
   // / click on a room doesn't accidentally start a drag.
   const [drag, setDrag] = useState(null);          // { id, x, y } once active
   const [hoverRoom, setHoverRoom] = useState(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const cardRefs = useRef({});
   const pressInfo = useRef(null);                  // armed but not yet dragging
   const longPressTimer = useRef(null);
@@ -527,7 +528,11 @@ function ObsidianRooms({ tk }) {
   return (
     <div style={panel(tk)}>
       <PanelHeader tk={tk} title={`Rooms · ${DATA.rooms.length}`}
-                   trailing={<button style={ghostBtn(tk)}><Icons.Plus size={14} /> Group</button>} />
+                   trailing={
+                     <button onClick={() => setPickerOpen(true)} style={ghostBtn(tk)}>
+                       <Icons.Plus size={14} /> Group
+                     </button>
+                   } />
       <div
         onPointerMove={onContainerPointerMove}
         onPointerUp={onContainerPointerUp}
@@ -584,6 +589,8 @@ function ObsidianRooms({ tk }) {
           </div>
         ))}
       </div>
+
+      {pickerOpen && <GroupPickerOverlay tk={tk} onClose={() => setPickerOpen(false)} />}
 
       {drag && (() => {
         const room = DATA.rooms.find((r) => r.id === drag.id);
@@ -1343,4 +1350,126 @@ function DrillPanel({ tk, panel, onItemPick, onPlay, onBack }) {
   );
 }
 
-Object.assign(window, { Obsidian, TopbarSearch });
+// ─── Tap-based group picker (keyboard/touch friendly alternative to drag) ───
+function GroupPickerOverlay({ tk, onClose }) {
+  const s = useSonos();
+  const [selected, setSelected] = useState([]);
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const toggle = (id) => {
+    setSelected((sel) => sel.includes(id) ? sel.filter((x) => x !== id) : [...sel, id]);
+  };
+
+  const onConfirm = () => {
+    if (selected.length < 2) return;
+    const [host, ...others] = selected;
+    others.forEach((o) => SonosActions.groupRooms(host, o));
+    onClose();
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: 'absolute', inset: 0, zIndex: 60,
+      background: tk.isDark ? 'rgba(0,0,0,.55)' : 'rgba(244,243,239,.55)',
+      backdropFilter: 'blur(20px) saturate(160%)',
+      WebkitBackdropFilter: 'blur(20px) saturate(160%)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: 24,
+    }}>
+      <div onClick={(e) => e.stopPropagation()} style={{
+        width: 'min(420px, 100%)', maxHeight: 'calc(100% - 48px)',
+        background: tk.isDark ? 'rgba(20,20,22,.95)' : 'rgba(255,255,255,.95)',
+        backdropFilter: 'blur(30px) saturate(180%)',
+        WebkitBackdropFilter: 'blur(30px) saturate(180%)',
+        border: `0.5px solid ${tk.border}`,
+        borderRadius: 18, color: tk.text,
+        boxShadow: '0 24px 80px rgba(0,0,0,.4)',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        <div style={{ padding: '16px 18px 8px', borderBottom: `0.5px solid ${tk.border}` }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, letterSpacing: '0.14em', textTransform: 'uppercase', color: 'var(--obs-accent)' }}>
+              Group rooms
+            </div>
+            <button onClick={onClose} style={{
+              border: 0, background: 'transparent', color: tk.text2,
+              cursor: 'pointer', display: 'grid', placeItems: 'center', padding: 4,
+            }}><Icons.Close size={16} /></button>
+          </div>
+          <div style={{ marginTop: 6, fontSize: 12, color: tk.text2, lineHeight: 1.5 }}>
+            Tap two or more rooms. The first you pick becomes the host — its current track plays on every grouped speaker.
+          </div>
+        </div>
+
+        <div style={{ overflowY: 'auto', flex: 1, padding: '6px 8px 8px' }}>
+          {DATA.rooms.map((r) => {
+            const isSelected = selected.includes(r.id);
+            const isHost = selected[0] === r.id;
+            return (
+              <button key={r.id} onClick={() => toggle(r.id)} style={{
+                display: 'flex', alignItems: 'center', gap: 12,
+                width: '100%', padding: '10px 12px', border: 0,
+                background: isSelected ? tk.surfaceStrong : 'transparent',
+                color: tk.text, cursor: 'pointer',
+                borderRadius: 12, textAlign: 'left',
+              }}>
+                <div style={{
+                  width: 20, height: 20, borderRadius: 6,
+                  border: `1.5px solid ${isSelected ? 'var(--obs-accent)' : tk.border}`,
+                  background: isSelected ? 'var(--obs-accent)' : 'transparent',
+                  display: 'grid', placeItems: 'center', flexShrink: 0,
+                  color: tk.isDark ? '#0a0a0a' : '#fff',
+                }}>
+                  {isSelected && <span style={{ fontSize: 12, fontWeight: 700 }}>✓</span>}
+                </div>
+                <RoomIcon id={r.icon} size={16} stroke={1.5} />
+                <span style={{ flex: 1, minWidth: 0, fontSize: 14, fontWeight: 540,
+                               overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {r.name}
+                </span>
+                {isHost && (
+                  <span style={{
+                    fontSize: 9, fontWeight: 600, letterSpacing: '0.08em',
+                    textTransform: 'uppercase', color: 'var(--obs-accent)',
+                  }}>Host</span>
+                )}
+              </button>
+            );
+          })}
+        </div>
+
+        <div style={{
+          padding: '10px 14px 14px', borderTop: `0.5px solid ${tk.border}`,
+          display: 'flex', alignItems: 'center', gap: 10,
+        }}>
+          <div style={{ flex: 1, fontSize: 12, color: tk.text3 }}>
+            {selected.length === 0 && 'Pick at least two rooms.'}
+            {selected.length === 1 && 'Pick one more room.'}
+            {selected.length >= 2 && `${selected.length} rooms selected.`}
+          </div>
+          <button onClick={onClose} style={{
+            padding: '8px 14px', border: `0.5px solid ${tk.border}`,
+            background: 'transparent', color: tk.text, cursor: 'pointer',
+            borderRadius: 999, fontSize: 13, fontWeight: 540,
+          }}>Cancel</button>
+          <button onClick={onConfirm} disabled={selected.length < 2} style={{
+            padding: '8px 16px', border: 0,
+            background: selected.length >= 2 ? 'var(--obs-accent)' : tk.surface,
+            color: selected.length >= 2 ? (tk.isDark ? '#0a0a0a' : '#fff') : tk.text3,
+            cursor: selected.length >= 2 ? 'pointer' : 'not-allowed',
+            borderRadius: 999, fontSize: 13, fontWeight: 600,
+          }}>
+            Group
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+Object.assign(window, { Obsidian, TopbarSearch, GroupPickerOverlay });
