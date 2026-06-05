@@ -113,7 +113,13 @@ function App() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data) => {
         if (cancelled || !data?.token) return;
-        const url = data.url || window.location.origin;
+        // If the dashboard is loaded over HTTPS (e.g. via Tailscale Serve),
+        // ALWAYS use the page origin for the WebSocket — browsers refuse
+        // to open ws:// connections from https:// pages (mixed content).
+        // The url field in auth.json only wins when the page is HTTP.
+        const url = (window.location.protocol === 'https:')
+          ? window.location.origin
+          : (data.url || window.location.origin);
         if (config.token === data.token && config.url === url) return;
         saveSetup({ url, token: data.token });
         setConfig({ url, token: data.token });

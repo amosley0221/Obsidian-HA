@@ -4,9 +4,15 @@
 const SETUP_KEYS = { url: 'sonos-ha-url', token: 'sonos-ha-token' };
 
 function loadSetup() {
+  // When the page is loaded over HTTPS, ignore any saved URL and use the
+  // page origin — a stale http:// URL in localStorage would otherwise be
+  // a ws:// endpoint that browsers refuse to open from an https:// page.
+  const httpsOverride = window.location.protocol === 'https:';
   try {
     return {
-      url: localStorage.getItem(SETUP_KEYS.url) || window.location.origin,
+      url: httpsOverride
+        ? window.location.origin
+        : (localStorage.getItem(SETUP_KEYS.url) || window.location.origin),
       token: localStorage.getItem(SETUP_KEYS.token) || '',
     };
   } catch (e) {
